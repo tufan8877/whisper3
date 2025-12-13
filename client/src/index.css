@@ -15,65 +15,79 @@
 }
 
 /* ===============================
-   BASE RESET
+   BASE RESET + NO HORIZONTAL SCROLL
 ================================ */
 @layer base {
   * {
     box-sizing: border-box;
   }
 
-  html, body {
+  html,
+  body {
     width: 100%;
     height: 100%;
-    overflow-x: hidden; /* 🔥 WICHTIG: verhindert seitliches Wischen */
+    max-width: 100%;
+    overflow-x: hidden; /* ✅ verhindert links/rechts wischen */
     background: var(--bg-dark);
     color: var(--text-primary);
-    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, sans-serif;
+  }
+
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
   }
 
   body {
     -webkit-overflow-scrolling: touch;
   }
 
-  input, textarea {
-    background: #1f2937 !important;
-    color: #ffffff !important;
-    border: 1px solid #374151 !important;
-    font-size: 16px !important; /* verhindert iOS-Zoom */
-  }
-
-  input::placeholder {
-    color: #9ca3af;
+  /* Inputs: iOS zoom verhindern */
+  input,
+  textarea {
+    font-size: 16px !important;
   }
 }
 
 /* ===============================
-   CHAT LAYOUT FIX (KRITISCH)
+   SAFE AREA (iPhone Notch + Safari UI)
 ================================ */
-
-/* Safe Area + Padding (iPhone Notch Fix) */
 .chat-safe {
   padding-left: max(12px, env(safe-area-inset-left));
   padding-right: max(12px, env(safe-area-inset-right));
 }
 
-/* Chat Container */
+/* ===============================
+   CHAT LAYOUT
+================================ */
 .chat-container {
   display: flex;
   flex-direction: column;
   width: 100%;
+  max-width: 100%;
   height: 100%;
   overflow-x: hidden;
+}
+
+.chat-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border);
 }
 
 /* Nachrichtenliste */
 .chat-messages {
   flex: 1;
   width: 100%;
+  max-width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   padding-top: 12px;
-  padding-bottom: 12px;
+  padding-bottom: 100px; /* ✅ Platz für Input */
 }
 
 /* Jede Message-Zeile */
@@ -84,18 +98,20 @@
 }
 
 /* ===============================
-   MESSAGE BUBBLES
+   MESSAGE BUBBLES (WICHTIG gegen Breite)
 ================================ */
 .message-bubble {
-  max-width: 75%;
+  max-width: 85%;
   padding: 10px 14px;
   border-radius: 18px;
+
+  /* ✅ harte Umbrüche: Base64 / lange Wörter */
+  overflow-wrap: anywhere;
   word-break: break-word;
   white-space: pre-wrap;
   line-height: 1.4;
 }
 
-/* Eigene Nachricht (rechts) */
 .message-sent {
   margin-left: auto;
   background: var(--primary);
@@ -103,7 +119,6 @@
   border-bottom-right-radius: 6px;
 }
 
-/* Empfangene Nachricht (links) */
 .message-received {
   margin-right: auto;
   background: #1f2937;
@@ -112,18 +127,27 @@
 }
 
 /* ===============================
-   CHAT INPUT (UNTEN FIXIERT)
+   INPUT BAR (unten fixiert + Safe Area)
+   ✅ HIER IST DER SENDEN BUTTON FIX
 ================================ */
 .chat-input-wrapper {
   position: sticky;
   bottom: 0;
   width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+
   background: var(--bg-dark);
   border-top: 1px solid var(--border);
-  padding: 12px;
+
+  /* ✅ iPhone/Safari: links/rechts genug Platz */
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  padding-top: 12px;
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
+/* input feld */
 .chat-input {
   width: 100%;
   padding: 12px 16px;
@@ -131,45 +155,40 @@
   background: #1f2937;
   color: white;
   border: 1px solid #374151;
+  outline: none;
 }
 
-/* ===============================
-   HEADER FIX
-================================ */
-.chat-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--bg-dark);
-  border-bottom: 1px solid var(--border);
-  padding: 12px;
+/* send button */
+.send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0; /* ✅ Button verschwindet nie */
+}
+
+/* icon buttons */
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: transparent;
+  color: #cbd5e1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* ===============================
    MOBILE ONLY
 ================================ */
 @media (max-width: 768px) {
-  html, body {
-    overflow-x: hidden;
-  }
-
-  .message-bubble {
-    max-width: 85%;
-  }
-
   button {
     min-height: 44px;
   }
-}
-
-/* ===============================
-   SCROLLBAR (optional)
-================================ */
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #374151;
-  border-radius: 3px;
 }
