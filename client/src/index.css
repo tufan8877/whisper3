@@ -2,390 +2,174 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===============================
+   ROOT THEME
+================================ */
 :root {
-  --background: hsl(240, 10%, 3.9%);
-  --foreground: hsl(0, 0%, 98%);
-  --muted: hsl(240, 3.7%, 15.9%);
-  --muted-foreground: hsl(240, 5%, 64.9%);
-  --popover: hsl(240, 10%, 3.9%);
-  --popover-foreground: hsl(0, 0%, 98%);
-  --card: hsl(240, 10%, 3.9%);
-  --card-foreground: hsl(0, 0%, 98%);
-  --border: hsl(240, 3.7%, 15.9%);
-  --input: hsl(240, 3.7%, 15.9%);
-  --primary: hsl(207, 90%, 54%);
-  --primary-foreground: hsl(211, 100%, 99%);
-  --secondary: hsl(240, 3.7%, 15.9%);
-  --secondary-foreground: hsl(0, 0%, 98%);
-  --accent: hsl(142, 76%, 36%);
-  --accent-foreground: hsl(0, 0%, 98%);
-  --destructive: hsl(0, 84.2%, 60.2%);
-  --destructive-foreground: hsl(60, 9.1%, 97.8%);
-  --ring: hsl(240, 4.9%, 83.9%);
-  --radius: 0.5rem;
-
-  /* Custom Whispergram colors */
-  --bg-dark: hsl(222, 84%, 5%);
-  --surface: hsl(215, 28%, 17%);
-  --text-primary: hsl(210, 40%, 98%);
-  --text-muted: hsl(215, 20%, 65%);
-  --danger: hsl(0, 84%, 60%);
-
-  /* Ensure proper contrast for inputs */
-  --input-bg: hsl(240, 10%, 8%);
-  --input-text: hsl(0, 0%, 98%);
+  --bg-dark: #0b1220;
+  --surface: #111827;
+  --border: #1f2937;
+  --text-primary: #f9fafb;
+  --text-muted: #9ca3af;
+  --primary: #3b82f6;
 }
 
-.dark {
-  --background: hsl(240, 10%, 3.9%);
-  --foreground: hsl(0, 0%, 98%);
-  --muted: hsl(240, 3.7%, 15.9%);
-  --muted-foreground: hsl(240, 5%, 64.9%);
-  --popover: hsl(240, 10%, 3.9%);
-  --popover-foreground: hsl(0, 0%, 98%);
-  --card: hsl(240, 10%, 3.9%);
-  --card-foreground: hsl(0, 0%, 98%);
-  --border: hsl(240, 3.7%, 15.9%);
-  --input: hsl(240, 3.7%, 15.9%);
-  --primary: hsl(207, 90%, 54%);
-  --primary-foreground: hsl(211, 100%, 99%);
-  --secondary: hsl(240, 3.7%, 15.9%);
-  --secondary-foreground: hsl(0, 0%, 98%);
-  --accent: hsl(142, 76%, 36%);
-  --accent-foreground: hsl(0, 0%, 98%);
-  --destructive: hsl(0, 62.8%, 30.6%);
-  --destructive-foreground: hsl(0, 0%, 98%);
-  --ring: hsl(240, 4.9%, 83.9%);
-  --radius: 0.5rem;
-}
-
+/* ===============================
+   BASE RESET
+================================ */
 @layer base {
   * {
-    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden; /* 🔥 WICHTIG: verhindert seitliches Wischen */
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
 
   body {
-    @apply font-sans antialiased bg-background text-foreground;
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      sans-serif;
-    background-color: var(--bg-dark);
-    color: var(--text-primary);
+    -webkit-overflow-scrolling: touch;
   }
 
-  html {
-    @apply dark;
+  input, textarea {
+    background: #1f2937 !important;
+    color: #ffffff !important;
+    border: 1px solid #374151 !important;
+    font-size: 16px !important; /* verhindert iOS-Zoom */
   }
 
-  /* Fix input visibility - force dark background and white text */
-  input[type="text"],
-  input[type="password"],
-  input[type="email"] {
-    background-color: hsl(215, 28%, 17%) !important;
-    color: hsl(210, 40%, 98%) !important;
-    border-color: hsl(240, 3.7%, 15.9%) !important;
-  }
-
-  input[type="text"]:focus,
-  input[type="password"]:focus,
-  input[type="email"]:focus {
-    background-color: hsl(215, 28%, 17%) !important;
-    color: hsl(210, 40%, 98%) !important;
-    outline: 2px solid hsl(207, 90%, 54%) !important;
-  }
-
-  /* Also fix placeholder text */
   input::placeholder {
-    color: hsl(215, 20%, 65%) !important;
-  }
-
-  /* Fix select visibility */
-  [role="combobox"] {
-    background-color: var(--surface) !important;
-    color: var(--text-primary) !important;
+    color: #9ca3af;
   }
 }
 
-@layer components {
-  /* ✅ FIXED: Message bubbles never cause horizontal scroll */
+/* ===============================
+   CHAT LAYOUT FIX (KRITISCH)
+================================ */
+
+/* Safe Area + Padding (iPhone Notch Fix) */
+.chat-safe {
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+}
+
+/* Chat Container */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+}
+
+/* Nachrichtenliste */
+.chat-messages {
+  flex: 1;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* Jede Message-Zeile */
+.message-row {
+  width: 100%;
+  display: flex;
+  margin-bottom: 8px;
+}
+
+/* ===============================
+   MESSAGE BUBBLES
+================================ */
+.message-bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 18px;
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+/* Eigene Nachricht (rechts) */
+.message-sent {
+  margin-left: auto;
+  background: var(--primary);
+  color: #ffffff;
+  border-bottom-right-radius: 6px;
+}
+
+/* Empfangene Nachricht (links) */
+.message-received {
+  margin-right: auto;
+  background: #1f2937;
+  color: #ffffff;
+  border-bottom-left-radius: 6px;
+}
+
+/* ===============================
+   CHAT INPUT (UNTEN FIXIERT)
+================================ */
+.chat-input-wrapper {
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  background: var(--bg-dark);
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+}
+
+.chat-input {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 999px;
+  background: #1f2937;
+  color: white;
+  border: 1px solid #374151;
+}
+
+/* ===============================
+   HEADER FIX
+================================ */
+.chat-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border);
+  padding: 12px;
+}
+
+/* ===============================
+   MOBILE ONLY
+================================ */
+@media (max-width: 768px) {
+  html, body {
+    overflow-x: hidden;
+  }
+
   .message-bubble {
-    @apply rounded-2xl p-3 break-words;
     max-width: 85%;
-    overflow-wrap: anywhere;
-    word-break: break-word;
   }
 
-  .message-bubble.sent {
-    @apply bg-primary text-white rounded-tr-md;
-  }
-
-  .message-bubble.received {
-    @apply bg-secondary text-foreground rounded-tl-md;
-  }
-
-  .chat-item {
-    @apply p-4 border-b border-border hover:bg-muted hover:bg-opacity-50 cursor-pointer transition-colors;
-  }
-
-  .typing-indicator {
-    @apply flex space-x-1;
-  }
-
-  .typing-dot {
-    @apply w-2 h-2 bg-muted-foreground rounded-full animate-bounce;
-  }
-
-  /* Ensure input visibility */
-  .input-field {
-    background-color: var(--input-bg) !important;
-    color: var(--input-text) !important;
-    border: 1px solid hsl(240, 3.7%, 25.9%) !important;
-  }
-
-  .input-field::placeholder {
-    color: hsl(240, 5%, 64.9%) !important;
+  button {
+    min-height: 44px;
   }
 }
 
-/* Custom animations */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* ULTIMATE INPUT VISIBILITY FIX - ÜBERSCHREIBT ALLES */
-input[type="text"],
-input[type="search"],
-input[type="password"],
-input[type="email"] {
-  background-color: #ffffff !important;
-  color: #000000 !important;
-  border: 1px solid #d1d5db !important;
-}
-
-input::placeholder {
-  color: #6b7280 !important;
-}
-
-/* Dark mode - aber noch sichtbar */
-.dark input[type="text"],
-.dark input[type="search"],
-.dark input[type="password"],
-.dark input[type="email"] {
-  background-color: #374151 !important;
-  color: #ffffff !important;
-  border: 1px solid #6b7280 !important;
-}
-
-.dark input::placeholder {
-  color: #9ca3af !important;
-}
-
-@keyframes slideIn {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.3s ease-out;
-}
-
-.animate-slide-in {
-  animation: slideIn 0.3s ease-out;
-}
-
-/* Scrollbar styling */
-.custom-scrollbar::-webkit-scrollbar {
+/* ===============================
+   SCROLLBAR (optional)
+================================ */
+::-webkit-scrollbar {
   width: 6px;
 }
 
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: hsl(240, 5%, 64.9%);
+::-webkit-scrollbar-thumb {
+  background: #374151;
   border-radius: 3px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: hsl(240, 5%, 54.9%);
-}
-
-/* Mobile-specific styles */
-@media (max-width: 768px) {
-  .safe-area-inset-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-
-  .pb-safe {
-    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
-  }
-
-  /* Ensure touch targets are at least 44px */
-  .touch-target {
-    min-height: 44px;
-    min-width: 44px;
-  }
-
-  /* Mobile chat optimizations */
-  .mobile-chat-container {
-    height: calc(100vh - 160px);
-    height: calc(100dvh - 160px);
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-  }
-
-  /* Better mobile scrolling */
-  .custom-scrollbar {
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-  }
-}
-
-/* PERFEKTE HANDY BROWSER OPTIMIERUNG - ERWEITERT */
-@media (max-width: 768px) {
-  /* HTML/Body Mobile Settings für perfekte Handy-Erfahrung */
-  html {
-    -webkit-text-size-adjust: 100%; /* Prevent zoom on orientation change */
-    -ms-text-size-adjust: 100%;
-    height: 100%;
-  }
-
-  body {
-    font-size: 16px !important; /* Prevents iOS zoom */
-    line-height: 1.6 !important;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-    height: 100%;
-  }
-
-  /* Touch-friendly buttons - Apple/Google recommended 44px minimum */
-  button,
-  .btn,
-  [role="button"],
-  .touch-target {
-    min-height: 44px !important;
-    min-width: 44px !important;
-    padding: 12px 16px !important;
-    touch-action: manipulation; /* Removes 300ms delay */
-    -webkit-tap-highlight-color: transparent; /* Remove tap highlights */
-  }
-
-  /* Perfect input fields for mobile browsers */
-  input,
-  textarea,
-  [role="textbox"] {
-    font-size: 16px !important; /* Prevents iOS zoom */
-    padding: 14px 16px !important;
-    border-radius: 8px !important;
-    min-height: 48px !important;
-    -webkit-appearance: none; /* Remove iOS styling */
-    appearance: none;
-  }
-
-  /* Chat input area mobile optimization */
-  .chat-input-area {
-    padding: 16px !important;
-    background: var(--background);
-    border-top: 1px solid var(--border);
-    position: sticky;
-    bottom: 0;
-  }
-
-  .chat-input {
-    font-size: 16px !important;
-    padding: 12px 16px !important;
-    min-height: 48px !important;
-    border-radius: 24px !important;
-    width: 100% !important;
-  }
-
-  /* Mobile navigation improvements */
-  .mobile-nav,
-  .chat-header {
-    padding: 12px 16px !important;
-    min-height: 60px !important;
-  }
-
-  /* Zurück-Button mobile optimization */
-  .back-button-mobile {
-    min-height: 44px !important;
-    min-width: 44px !important;
-    padding: 8px !important;
-    margin-right: 8px !important;
-  }
-
-  /* Avatar sizing for mobile */
-  .avatar-mobile {
-    width: 40px !important;
-    height: 40px !important;
-  }
-
-  /* Touch interactions optimization */
-  * {
-    -webkit-tap-highlight-color: transparent;
-    -webkit-touch-callout: none;
-    scroll-behavior: smooth;
-  }
-
-  /* User select optimization */
-  .no-select,
-  .chat-header,
-  .sidebar,
-  button {
-    -webkit-user-select: none;
-    -moz-user-select: none;
-    -ms-user-select: none;
-    user-select: none;
-  }
-
-  /* Chat messages can be selected */
-  .message-content {
-    -webkit-user-select: text;
-    -moz-user-select: text;
-    -ms-user-select: text;
-    user-select: text;
-  }
-
-  /* Mobile-friendly scrolling */
-  .scroll-container {
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-  }
-}
-
-/* =========================================
-   ✅ FINAL FIX: Kein horizontales Scrollen
-   ========================================= */
-html,
-body {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-#root {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-/* Lange Inhalte (Base64, URLs, Keys) umbrechen statt Seite breit machen */
-.message-bubble,
-.message-content,
-.chat-item,
-* {
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
