@@ -6,25 +6,27 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Enhanced CORS for WebSocket support including upgrade headers
+// CORS (Production: nur deine Render-Domain, Dev: offen)
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
+  const allowedOrigin =
+    process.env.NODE_ENV === "production"
+      ? "https://whisper3.onrender.com"
+      : "*";
+
+  res.header("Access-Control-Allow-Origin", allowedOrigin);
+  res.header("Vary", "Origin");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
     "Origin, X-Requested-With, Content-Type, Accept, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Key, Sec-WebSocket-Version, Connection, Upgrade"
   );
 
-  // Special handling for WebSocket upgrade requests
-  if (req.headers.upgrade === "websocket") {
-    return next();
+  // Preflight
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
   }
 
-  if (req.method === "OPTIONS") {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
+  next();
 });
 
 app.use((req, res, next) => {
@@ -71,7 +73,6 @@ app.use((req, res, next) => {
   });
 
   // Setup Vite AFTER all API routes are registered
-  // This ensures API routes are handled before Vite's catch-all
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
@@ -84,7 +85,6 @@ app.use((req, res, next) => {
   // Windows-friendly: lokal 127.0.0.1, production (Render) 0.0.0.0
   const host = app.get("env") === "development" ? "127.0.0.1" : "0.0.0.0";
 
-  // Kompatibelster listen-Aufruf (ohne reusePort)
   server.listen(port, host, () => {
     log(`serving on http://${host}:${port}`);
   });
