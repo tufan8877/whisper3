@@ -78,6 +78,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // ============================
+  // ✅ HEALTH ENDPOINT (WICHTIG!)
+  // ============================
+  app.get("/api/health", (_req, res) => {
+    return res.json({
+      ok: true,
+      status: "ok",
+      time: new Date().toISOString(),
+    });
+  });
+
+  // ============================
   // REST API
   // ============================
 
@@ -185,7 +196,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get chats (this should already filter deleted chats in your storage)
+  // Get chats (should filter deleted chats in your storage)
   app.get("/api/chats/:userId", async (req, res) => {
     try {
       const userId = toInt(req.params.userId, 0);
@@ -248,7 +259,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const blockedUserId = toInt(req.params.userId, 0);
       const blockerId = toInt(req.body?.blockerId, 0);
-      if (!blockedUserId || !blockerId) return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
+      if (!blockedUserId || !blockerId)
+        return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
 
       await storage.blockUser(blockerId, blockedUserId);
       return res.json({ ok: true, success: true });
@@ -282,7 +294,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Debug clear-all (optional)
   app.post("/api/debug/clear-all", (_req, res) => {
     console.log("🧹 Clearing all storage data...");
-    // only if MemStorage
     try {
       (storage as any).users?.clear?.();
       (storage as any).messages?.clear?.();
@@ -295,6 +306,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch {}
     console.log("✅ All data cleared");
     return res.json({ ok: true, success: true, message: "All data cleared" });
+  });
+
+  // ✅ WICHTIG: Wenn irgendein /api/* nicht existiert, soll JSON kommen (nicht SPA 404)
+  app.use("/api", (_req, res) => {
+    return res.status(404).json({ ok: false, message: "API route not found" });
   });
 
   // ============================
@@ -404,29 +420,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
-        // ✅ typing realtime (direkt an receiverId)
+        // ✅ typing realtime
         if (parsed?.type === "typing") {
           const receiverId = toInt(parsed.receiverId, 0);
           const senderId = toInt(parsed.senderId, 0);
           const chatId = toInt(parsed.chatId, 0);
           const isTyping = Boolean(parsed.isTyping);
 
-          // must be joined
           if (!joinedUserId) return;
-
-          // anti-spoof
           if (senderId !== joinedUserId) return;
 
           const receiverClient = connectedClients.get(receiverId);
           if (receiverClient?.ws?.readyState === WebSocket.OPEN) {
-            receiverClient.ws.send(
-              JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping })
-            );
+            receiverClient.ws.send(JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping }));
           }
           return;
         }
 
-        // Normal WS messages (join, message, etc.)
         let validatedMessage: WSMessage;
 
         if (parsed.type === "message") {
@@ -454,7 +464,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await storage.updateUserOnlineStatus(joinedUserId, true);
 
             ws.send(JSON.stringify({ type: "join_confirmed", ok: true, userId: joinedUserId }));
-
             broadcast({ type: "user_status", userId: joinedUserId, isOnline: true }, joinedUserId);
             break;
           }
@@ -468,7 +477,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const senderId = toInt((validatedMessage as any).senderId, 0);
             const receiverId = toInt((validatedMessage as any).receiverId, 0);
 
-            // anti-spoof: senderId muss dem joined user entsprechen
             if (!senderId || senderId !== joinedUserId) {
               ws.send(JSON.stringify({ type: "error", message: "Sender mismatch" }));
               return;
@@ -480,7 +488,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            // Wenn Chat für Receiver gelöscht war, reaktivieren (WhatsApp-like)
+            // reaktivieren falls gelöscht
             if ((storage as any).isChatDeletedForUser && (storage as any).reactivateChatForUser) {
               const wasDeleted = await (storage as any).isChatDeletedForUser(receiverId, chat.id);
               if (wasDeleted) await (storage as any).reactivateChatForUser(receiverId, chat.id);
@@ -509,8 +517,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
               expiresAt,
             } as any);
 
-            // unread receiver: nur dann extra increment, wenn dein storage es NICHT schon intern macht
-            // (DatabaseStorage macht es NICHT, MemStorage kann es evtl. machen. Daher Schutz):
             const storageName = (storage as any)?.constructor?.name || "";
             const isMem = storageName.toLowerCase().includes("mem");
             if (!isMem && (storage as any).incrementUnreadCount) {
@@ -519,17 +525,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             await storage.updateChatLastMessage(chat.id, (newMessage as any).id);
 
-            // ack sender
-            ws.send(
-              JSON.stringify({
-                type: "message_sent",
-                ok: true,
-                messageId: (newMessage as any).id,
-                chatId: (newMessage as any).chatId,
-              })
-            );
+            ws.send(JSON.stringify({ type: "message_sent", ok: true, messageId: (newMessage as any).id, chatId: (newMessage as any).chatId }));
 
-            // realtime push (sender+receiver)
             const payload = { type: "new_message", message: newMessage };
 
             const senderClient = connectedClients.get(senderId);
@@ -542,7 +539,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           case "read_receipt":
-            // optional später
             break;
         }
       } catch (err) {
