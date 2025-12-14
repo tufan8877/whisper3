@@ -7,34 +7,50 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { generateKeyPair } from "@/lib/crypto";
 import { useToast } from "@/hooks/use-toast";
-import { postJson } from "@/lib/queryClient";
 import { useLanguage } from "@/lib/i18n";
 import { LanguageSelector } from "@/components/ui/language-selector";
 import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
-
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 
-type ApiUser = {
-  id: number;
-  username: string;
-  publicKey?: string;
-};
+type ApiOk<T> = { ok: true; user: T };
+type ApiErr = { ok: false; message: string; errors?: any };
 
-type AuthResponse = {
-  user: ApiUser;
-};
+function sameOriginApiUrl(path: string) {
+  // garantiert gültig auf iOS/Android/alle Browser
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${window.location.origin}${p}`;
+}
 
-function normalizeErrMessage(err: any) {
-  const msg = String(err?.message || err || "Unknown error");
+async function postJson<T>(path: string, data: any): Promise<T> {
+  const url = sameOriginApiUrl(path);
 
-  // typische fetch Fehler
-  if (msg.includes("Invalid URL")) return "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
-  if (msg.includes("Failed to fetch")) return "Server nicht erreichbar (Netzwerk/CORS). Bitte Seite neu laden und erneut versuchen.";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+    credentials: "include",
+  });
 
-  // apiRequest Fehler: "400: {...}" oder "401: ..."
-  return msg;
+  const text = await res.text();
+  let json: any = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // wenn server HTML liefert, kommt das hier rein
+    json = null;
+  }
+
+  if (!res.ok) {
+    // wenn server JSON error liefert:
+    if (json?.message) throw new Error(json.message);
+    // sonst raw body:
+    throw new Error(text || res.statusText);
+  }
+
+  return (json ?? {}) as T;
 }
 
 export default function WelcomePage() {
@@ -51,16 +67,32 @@ export default function WelcomePage() {
   const { toast } = useToast();
   const { t } = useLanguage();
 
-  // Initialize session persistence on mount (nur 1x!)
   useEffect(() => {
+    // NUR EINMAL (du hattest es doppelt)
     SessionPersistence.getInstance().initialize();
   }, []);
+
+  function showNiceError(title: string, err: any) {
+    const msg =
+      typeof err?.message === "string" && err.message.trim().length > 0
+        ? err.message
+        : "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
+
+    toast({
+      title,
+      description: msg,
+      variant: "destructive",
+    });
+
+    // Debug in Konsole (hilft extrem)
+    console.error("❌ AUTH ERROR:", err);
+  }
 
   const handleLogin = async () => {
     if (!loginUsername.trim() || !loginPassword.trim()) {
       toast({
         title: t("error"),
-        description: t("usernameEmpty"),
+        description: t("enterCredentials"),
         variant: "destructive",
       });
       return;
@@ -68,27 +100,24 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      // ✅ IMMER absolute API paths mit leading slash!
-      const data = await postJson<AuthResponse>("/api/login", {
-        username: loginUsername.trim(),
-        password: loginPassword,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/login",
+        { username: loginUsername.trim(), password: loginPassword }
+      );
 
-      if (!data?.user?.id) {
-        throw new Error("Login response invalid (missing user)");
+      if (!("ok" in data) || data.ok !== true) {
+        throw new Error((data as any)?.message || t("loginFailed"));
       }
 
-      // privateKey aus storage holen (wenn vorhanden)
+      // PrivateKey holen oder neu generieren
       const existingData = localStorage.getItem("user");
       let privateKey = "";
-
       if (existingData) {
-        const parsed = JSON.parse(existingData);
-        if (parsed?.username === data.user.username && parsed?.privateKey) {
-          privateKey = parsed.privateKey;
-        }
+        try {
+          const parsed = JSON.parse(existingData);
+          if (parsed?.username === loginUsername.trim()) privateKey = parsed.privateKey || "";
+        } catch {}
       }
-
       if (!privateKey) {
         const kp = await generateKeyPair();
         privateKey = kp.privateKey;
@@ -108,12 +137,7 @@ export default function WelcomePage() {
 
       setLocation("/chat");
     } catch (err: any) {
-      toast({
-        title: t("error"),
-        description: normalizeErrMessage(err) || t("loginFailed"),
-        variant: "destructive",
-      });
-      console.error("❌ Login failed:", err);
+      showNiceError(t("error"), err);
     } finally {
       setIsLoading(false);
     }
@@ -122,10 +146,10 @@ export default function WelcomePage() {
   const handleStartChatting = async () => {
     const finalUsername = username.trim();
 
-    if (!finalUsername) {
+    if (registerPassword.trim().length < 6) {
       toast({
-        title: t("error"),
-        description: t("enterUsername"),
+        title: t("passwordTooShort"),
+        description: t("passwordMinLength"),
         variant: "destructive",
       });
       return;
@@ -133,26 +157,8 @@ export default function WelcomePage() {
 
     if (finalUsername.length < 3) {
       toast({
-        title: t("error"),
+        title: t("usernameTooShort"),
         description: t("usernameMinLength"),
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!registerPassword.trim()) {
-      toast({
-        title: t("error"),
-        description: t("enterPassword"),
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (registerPassword.length < 6) {
-      toast({
-        title: t("error"),
-        description: t("passwordMinLength"),
         variant: "destructive",
       });
       return;
@@ -162,15 +168,13 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      // ✅ IMMER absolute API paths mit leading slash!
-      const data = await postJson<AuthResponse>("/api/register", {
-        username: finalUsername,
-        password: registerPassword,
-        publicKey,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/register",
+        { username: finalUsername, password: registerPassword, publicKey }
+      );
 
-      if (!data?.user?.id) {
-        throw new Error("Register response invalid (missing user)");
+      if (!("ok" in data) || data.ok !== true) {
+        throw new Error((data as any)?.message || t("registrationFailed"));
       }
 
       const userProfile = {
@@ -187,12 +191,7 @@ export default function WelcomePage() {
 
       setLocation("/chat");
     } catch (err: any) {
-      toast({
-        title: t("registrationFailed"),
-        description: normalizeErrMessage(err) || t("accountCreationFailed"),
-        variant: "destructive",
-      });
-      console.error("❌ Registration failed:", err);
+      showNiceError(t("registrationFailed"), err);
     } finally {
       setIsLoading(false);
     }
@@ -201,28 +200,19 @@ export default function WelcomePage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
-        {/* Logo and Brand */}
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img
-              src={logoPath}
-              alt="Whispergram Logo"
-              className="w-full h-full object-cover rounded-xl"
-            />
+            <img src={logoPath} alt="Whispergram Logo" className="w-full h-full object-cover rounded-xl" />
           </div>
-          <p className="text-text-muted text-base sm:text-lg px-2">
-            {t("welcomeDescription")}
-          </p>
+          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
         </div>
 
-        {/* Language Selector */}
         <div className="flex justify-center mb-4 sm:mb-8">
           <div className="bg-surface/80 border border-border rounded-xl p-3 sm:p-4 shadow-lg backdrop-blur-sm">
             <LanguageSelector />
           </div>
         </div>
 
-        {/* Login/Register Form */}
         <div className="max-w-md mx-auto">
           <Card className="bg-surface border-border">
             <CardContent className="p-4 sm:p-6">
@@ -240,15 +230,12 @@ export default function WelcomePage() {
 
                 <TabsContent value="register" className="space-y-4">
                   <h3 className="text-lg font-semibold text-foreground">{t("createAccount")}</h3>
-
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                      autoCapitalize="none"
-                      autoCorrect="off"
                     />
                     <Input
                       type="password"
@@ -271,15 +258,12 @@ export default function WelcomePage() {
 
                 <TabsContent value="login" className="space-y-4">
                   <h3 className="text-lg font-semibold text-foreground">{t("login")}</h3>
-
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
                       value={loginUsername}
                       onChange={(e) => setLoginUsername(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                      autoCapitalize="none"
-                      autoCorrect="off"
                     />
                     <Input
                       type="password"
@@ -304,10 +288,8 @@ export default function WelcomePage() {
           </Card>
         </div>
 
-        {/* Features */}
         <div className="mt-12 mb-8">
           <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
-
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
@@ -351,13 +333,11 @@ export default function WelcomePage() {
           </div>
         </div>
 
-        {/* Links */}
         <div className="text-center space-y-4 pt-8 border-t border-border/50">
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">{t("messagesNotStored")}</p>
             <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
-
           <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-6">
             <button
               onClick={() => setLocation("/faq")}
@@ -365,7 +345,7 @@ export default function WelcomePage() {
             >
               {t("frequentlyAskedQuestions")}
             </button>
-            <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full" />
+            <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full"></div>
             <button
               onClick={() => setLocation("/imprint")}
               className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
