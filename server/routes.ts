@@ -43,24 +43,12 @@ function safeJson(res: any, status: number, payload: any) {
   return res.status(status).json(payload);
 }
 
-/**
- * Normalisiert destructTimer:
- * - wenn Client ms sendet -> in Sekunden umrechnen
- * - clamp auf min/max
- */
 function normalizeDestructTimerSeconds(raw: any) {
   let t = toInt(raw, 86400);
-
-  // Wenn jemand ms schickt (z.B. 300000), dann umrechnen
-  if (t > 100000) t = Math.floor(t / 1000);
-
-  // Minimum 5 Sekunden (für Tests / UI)
+  if (t > 100000) t = Math.floor(t / 1000); // ms -> sec
   if (t < 5) t = 5;
-
-  // Maximum 7 Tage
   const max = 7 * 24 * 60 * 60;
   if (t > max) t = max;
-
   return t;
 }
 
@@ -78,12 +66,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // ============================
-  // ✅ HEALTH ENDPOINT (WICHTIG!)
+  // ✅ HEALTH (WICHTIG FÜR DEBUG)
   // ============================
   app.get("/api/health", (_req, res) => {
     return res.json({
       ok: true,
-      status: "ok",
+      service: "whisper3",
       time: new Date().toISOString(),
     });
   });
@@ -102,7 +90,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!username || !password || !publicKey) {
         return safeJson(res, 400, {
           ok: false,
-          message: "Username, password, and publicKey are required",
+          message: "username, password, publicKey required",
         });
       }
 
@@ -124,8 +112,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         user: { id: user.id, username: user.username, publicKey: user.publicKey },
       });
     } catch (err: any) {
-      console.error("Registration error:", err);
-      return safeJson(res, 400, {
+      console.error("❌ Registration error:", err);
+      return safeJson(res, 500, {
         ok: false,
         message: err?.message || "Registration failed",
       });
@@ -158,8 +146,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (err instanceof z.ZodError) {
         return safeJson(res, 400, { ok: false, message: "Invalid input", errors: err.errors });
       }
-      console.error("Login error:", err);
-      return safeJson(res, 400, { ok: false, message: err?.message || "Login failed" });
+      console.error("❌ Login error:", err);
+      return safeJson(res, 500, { ok: false, message: err?.message || "Login failed" });
     }
   });
 
@@ -168,13 +156,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const q = String(req.query?.q || "").trim();
       const excludeId = toInt(req.query?.exclude ?? req.query?.excludeId, 0);
-
       if (!q) return res.json([]);
-
       const users = await storage.searchUsers(q, excludeId);
       return res.json(users);
     } catch (err) {
-      console.error("Search users error:", err);
+      console.error("❌ Search users error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to search users" });
     }
   });
@@ -185,27 +171,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const participant1Id = toInt(req.body?.participant1Id, 0);
       const participant2Id = toInt(req.body?.participant2Id, 0);
       if (!participant1Id || !participant2Id) {
-        return safeJson(res, 400, { ok: false, message: "participant1Id and participant2Id are required" });
+        return safeJson(res, 400, { ok: false, message: "participant1Id and participant2Id required" });
       }
-
       const chat = await storage.getOrCreateChatByParticipants(participant1Id, participant2Id);
       return res.json({ ok: true, chat });
     } catch (err) {
-      console.error("Create chat error:", err);
+      console.error("❌ Create chat error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to create chat" });
     }
   });
 
-  // Get chats (should filter deleted chats in your storage)
+  // Get chats
   app.get("/api/chats/:userId", async (req, res) => {
     try {
       const userId = toInt(req.params.userId, 0);
       if (!userId) return safeJson(res, 400, { ok: false, message: "Invalid userId" });
-
       const chats = await storage.getChatsByUserId(userId);
       return res.json(chats);
     } catch (err) {
-      console.error("Get chats error:", err);
+      console.error("❌ Get chats error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to fetch chats" });
     }
   });
@@ -215,11 +199,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const chatId = toInt(req.params.chatId, 0);
       if (!chatId) return safeJson(res, 400, { ok: false, message: "Invalid chatId" });
-
       const msgs = await storage.getMessagesByChat(chatId);
       return res.json(msgs);
     } catch (err) {
-      console.error("Get messages error:", err);
+      console.error("❌ Get messages error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to fetch messages" });
     }
   });
@@ -230,26 +213,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const chatId = toInt(req.params.chatId, 0);
       const userId = toInt(req.body?.userId, 0);
       if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
-
       await storage.resetUnreadCount(chatId, userId);
       return res.json({ ok: true, success: true });
     } catch (err) {
-      console.error("Mark read error:", err);
+      console.error("❌ Mark read error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to mark chat as read" });
     }
   });
 
-  // Delete chat for user (WhatsApp-style)
+  // Delete chat for user
   app.post("/api/chats/:chatId/delete", async (req, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
       const userId = toInt(req.body?.userId, 0);
       if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
-
       await storage.deleteChatForUser(userId, chatId);
       return res.json({ ok: true, success: true });
     } catch (err) {
-      console.error("Delete chat error:", err);
+      console.error("❌ Delete chat error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to delete chat" });
     }
   });
@@ -259,13 +240,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const blockedUserId = toInt(req.params.userId, 0);
       const blockerId = toInt(req.body?.blockerId, 0);
-      if (!blockedUserId || !blockerId)
-        return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
-
+      if (!blockedUserId || !blockerId) return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
       await storage.blockUser(blockerId, blockedUserId);
       return res.json({ ok: true, success: true });
     } catch (err) {
-      console.error("Block user error:", err);
+      console.error("❌ Block user error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to block user" });
     }
   });
@@ -284,50 +263,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         url: `/uploads/${req.file.filename}`,
       });
     } catch (err) {
-      console.error("Upload error:", err);
+      console.error("❌ Upload error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to upload file" });
     }
   });
 
   app.use("/uploads", express.static(uploadDir));
 
-  // Debug clear-all (optional)
-  app.post("/api/debug/clear-all", (_req, res) => {
-    console.log("🧹 Clearing all storage data...");
-    try {
-      (storage as any).users?.clear?.();
-      (storage as any).messages?.clear?.();
-      (storage as any).chats?.clear?.();
-      (storage as any).blockedUsers?.clear?.();
-      (storage as any).deletedChats?.clear?.();
-      (storage as any).userIdCounter = 1;
-      (storage as any).messageIdCounter = 1;
-      (storage as any).chatIdCounter = 1;
-    } catch {}
-    console.log("✅ All data cleared");
-    return res.json({ ok: true, success: true, message: "All data cleared" });
-  });
-
-  // ✅ WICHTIG: Wenn irgendein /api/* nicht existiert, soll JSON kommen (nicht SPA 404)
-  app.use("/api", (_req, res) => {
-    return res.status(404).json({ ok: false, message: "API route not found" });
-  });
-
   // ============================
-  // ✅ WebSocket (typing realtime + robust)
+  // WebSocket
   // ============================
-
   const ipConnCount = new Map<string, number>();
   const MAX_CONNS_PER_IP = 10;
 
   const wss = new WebSocketServer({
     server: httpServer,
     path: "/ws",
-    maxPayload: 32 * 1024, // 32KB
+    maxPayload: 32 * 1024,
     perMessageDeflate: false,
   });
 
-  // Heartbeat
   setInterval(() => {
     wss.clients.forEach((client: any) => {
       if (client.isAlive === false) return client.terminate();
@@ -336,38 +291,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   }, 30000);
 
-  // Cleanup expired messages (storage may return number OR void; we handle both)
   setInterval(async () => {
     try {
-      const ret = await (storage as any).deleteExpiredMessages?.();
-      const deletedCount = typeof ret === "number" ? ret : 0;
-      if (deletedCount > 0) console.log(`🧹 Cleaned up ${deletedCount} expired messages`);
+      await (storage as any).deleteExpiredMessages?.();
     } catch (err) {
-      console.error("❌ Error during message cleanup:", err);
+      console.error("❌ Cleanup error:", err);
     }
   }, 300000);
 
   wss.on("connection", (ws: any, req: any) => {
-    // Origin allowlist
-    const origin = req.headers.origin;
-    const allowedOrigins = new Set([
-      "https://whisper3.onrender.com",
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-    ]);
-    if (origin && !allowedOrigins.has(origin)) {
-      ws.close(1008, "Origin not allowed");
-      return;
-    }
-
-    // IP detect
     const xff = req.headers["x-forwarded-for"];
     const ip =
       typeof xff === "string" && xff.length > 0
         ? xff.split(",")[0].trim()
         : req.socket?.remoteAddress || "unknown";
 
-    // IP conn limit
     const curr = ipConnCount.get(ip) ?? 0;
     if (curr >= MAX_CONNS_PER_IP) {
       ws.close(1013, "Too many connections");
@@ -381,24 +319,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       else ipConnCount.set(ip, now);
     });
 
-    // heartbeat flag
     ws.isAlive = true;
     ws.on("pong", () => (ws.isAlive = true));
-
-    // rate limit: 25 msgs / 10s
-    let tokens = 25;
-    let last = Date.now();
-    function takeToken() {
-      const now = Date.now();
-      const delta = (now - last) / 1000;
-      last = now;
-      tokens = Math.min(25, tokens + delta * 2.5);
-      if (tokens >= 1) {
-        tokens -= 1;
-        return true;
-      }
-      return false;
-    }
 
     let joinedUserId: number | null = null;
 
@@ -406,11 +328,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     ws.on("message", async (data: any) => {
       try {
-        if (!takeToken()) {
-          ws.close(1013, "Rate limited");
-          return;
-        }
-
         const raw = data.toString();
         let parsed: any;
         try {
@@ -420,7 +337,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
-        // ✅ typing realtime
         if (parsed?.type === "typing") {
           const receiverId = toInt(parsed.receiverId, 0);
           const senderId = toInt(parsed.senderId, 0);
@@ -488,12 +404,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            // reaktivieren falls gelöscht
-            if ((storage as any).isChatDeletedForUser && (storage as any).reactivateChatForUser) {
-              const wasDeleted = await (storage as any).isChatDeletedForUser(receiverId, chat.id);
-              if (wasDeleted) await (storage as any).reactivateChatForUser(receiverId, chat.id);
-            }
-
             const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
             const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
 
@@ -517,15 +427,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
               expiresAt,
             } as any);
 
-            const storageName = (storage as any)?.constructor?.name || "";
-            const isMem = storageName.toLowerCase().includes("mem");
-            if (!isMem && (storage as any).incrementUnreadCount) {
-              await (storage as any).incrementUnreadCount(chat.id, receiverId);
-            }
-
             await storage.updateChatLastMessage(chat.id, (newMessage as any).id);
 
-            ws.send(JSON.stringify({ type: "message_sent", ok: true, messageId: (newMessage as any).id, chatId: (newMessage as any).chatId }));
+            ws.send(JSON.stringify({ type: "message_sent", ok: true, messageId: (newMessage as any).id, chatId: chat.id }));
 
             const payload = { type: "new_message", message: newMessage };
 
@@ -537,12 +441,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             break;
           }
-
-          case "read_receipt":
-            break;
         }
       } catch (err) {
-        console.error("WebSocket message error:", err);
+        console.error("❌ WebSocket message error:", err);
         try {
           ws.send(JSON.stringify({ type: "error", message: "WebSocket processing error" }));
         } catch {}
@@ -555,10 +456,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.updateUserOnlineStatus(joinedUserId, false);
         broadcast({ type: "user_status", userId: joinedUserId, isOnline: false }, joinedUserId);
       }
-    });
-
-    ws.on("error", (err: any) => {
-      console.error("❌ WEBSOCKET ERROR:", err);
     });
   });
 
