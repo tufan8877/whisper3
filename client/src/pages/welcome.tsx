@@ -17,8 +17,11 @@ import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 type ApiOk<T> = { ok: true; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
 
+/**
+ * ✅ postJson: IMMER relative URL benutzen
+ * -> funktioniert auf Render, iOS Safari, Android Chrome, Desktop, etc.
+ */
 async function postJson<T>(path: string, data: any): Promise<T> {
-  // ✅ WICHTIG: NUR relative URL, niemals window.location.origin basteln
   const url = path.startsWith("/") ? path : `/${path}`;
 
   let res: Response;
@@ -30,31 +33,35 @@ async function postJson<T>(path: string, data: any): Promise<T> {
       credentials: "include",
     });
   } catch (e: any) {
-    // Network / CORS / DNS / Offline
     throw new Error(e?.message || "Network error (fetch failed)");
   }
 
   const text = await res.text();
-  let json: any = null;
 
+  // Versuche JSON zu parsen, falls Server JSON sendet
+  let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
-    json = null; // server hat HTML oder plain text geliefert
+    json = null;
   }
 
+  // Fehlerfall: bessere Message zusammenbauen
   if (!res.ok) {
     const msg =
       (json && (json.message || json.error)) ||
       (text && text.slice(0, 300)) ||
       res.statusText ||
       "Request failed";
+
     throw new Error(`${res.status}: ${msg}`);
   }
 
-  // wenn Server fälschlich HTML mit 200 liefert:
+  // Server liefert 200 aber kein JSON => meistens falsches Routing / HTML Antwort
   if (json === null) {
-    throw new Error("Server returned non-JSON response (check /api routes on server)");
+    throw new Error(
+      "Server returned non-JSON response. Check that /api/login and /api/register exist and return JSON."
+    );
   }
 
   return json as T;
@@ -75,14 +82,21 @@ export default function WelcomePage() {
   const { t } = useLanguage();
 
   useEffect(() => {
+    // ✅ nur einmal (bei dir war das früher doppelt)
     SessionPersistence.getInstance().initialize();
   }, []);
 
   function showNiceError(title: string, err: any) {
-    const msg =
+    const raw =
       typeof err?.message === "string" && err.message.trim().length > 0
         ? err.message
-        : "Unbekannter Fehler (kein Error-Text). Bitte neu laden.";
+        : "Unbekannter Fehler. Bitte neu laden.";
+
+    // Wenn “Invalid URL” auftaucht, erklären wir es genauer
+    const msg =
+      raw.includes("Invalid URL")
+        ? "400: Invalid URL. Das heißt meistens: dein Frontend ruft eine falsche API-URL auf ODER der Server bekommt keinen gültigen Request. Bitte sicherstellen, dass /api/login und /api/register auf Render existieren."
+        : raw;
 
     toast({
       title,
@@ -201,9 +215,15 @@ export default function WelcomePage() {
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img src={logoPath} alt="Whispergram Logo" className="w-full h-full object-cover rounded-xl" />
+            <img
+              src={logoPath}
+              alt="Whispergram Logo"
+              className="w-full h-full object-cover rounded-xl"
+            />
           </div>
-          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
+          <p className="text-text-muted text-base sm:text-lg px-2">
+            {t("welcomeDescription")}
+          </p>
         </div>
 
         <div className="flex justify-center mb-4 sm:mb-8">
@@ -228,7 +248,9 @@ export default function WelcomePage() {
                 </TabsList>
 
                 <TabsContent value="register" className="space-y-4">
-                  <h3 className="text-lg font-semibold text-foreground">{t("createAccount")}</h3>
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {t("createAccount")}
+                  </h3>
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
@@ -243,7 +265,9 @@ export default function WelcomePage() {
                       onChange={(e) => setRegisterPassword(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                     />
-                    <p className="text-sm text-muted-foreground">{t("chooseUsernameHint")}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {t("chooseUsernameHint")}
+                    </p>
                   </div>
 
                   <Button
@@ -288,7 +312,9 @@ export default function WelcomePage() {
         </div>
 
         <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
+          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">
+            {t("features")}
+          </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
