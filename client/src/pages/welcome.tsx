@@ -17,21 +17,22 @@ import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 type ApiOk<T> = { ok: true; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
 
-function sameOriginApiUrl(path: string) {
-  // garantiert gültig auf iOS/Android/alle Browser
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${window.location.origin}${p}`;
-}
-
 async function postJson<T>(path: string, data: any): Promise<T> {
-  const url = sameOriginApiUrl(path);
+  // ✅ WICHTIG: NUR relative URL, niemals window.location.origin basteln
+  const url = path.startsWith("/") ? path : `/${path}`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-    credentials: "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+      credentials: "include",
+    });
+  } catch (e: any) {
+    // Network / CORS / DNS / Offline
+    throw new Error(e?.message || "Network error (fetch failed)");
+  }
 
   const text = await res.text();
   let json: any = null;
@@ -39,18 +40,24 @@ async function postJson<T>(path: string, data: any): Promise<T> {
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
-    // wenn server HTML liefert, kommt das hier rein
-    json = null;
+    json = null; // server hat HTML oder plain text geliefert
   }
 
   if (!res.ok) {
-    // wenn server JSON error liefert:
-    if (json?.message) throw new Error(json.message);
-    // sonst raw body:
-    throw new Error(text || res.statusText);
+    const msg =
+      (json && (json.message || json.error)) ||
+      (text && text.slice(0, 300)) ||
+      res.statusText ||
+      "Request failed";
+    throw new Error(`${res.status}: ${msg}`);
   }
 
-  return (json ?? {}) as T;
+  // wenn Server fälschlich HTML mit 200 liefert:
+  if (json === null) {
+    throw new Error("Server returned non-JSON response (check /api routes on server)");
+  }
+
+  return json as T;
 }
 
 export default function WelcomePage() {
@@ -68,7 +75,6 @@ export default function WelcomePage() {
   const { t } = useLanguage();
 
   useEffect(() => {
-    // NUR EINMAL (du hattest es doppelt)
     SessionPersistence.getInstance().initialize();
   }, []);
 
@@ -76,7 +82,7 @@ export default function WelcomePage() {
     const msg =
       typeof err?.message === "string" && err.message.trim().length > 0
         ? err.message
-        : "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
+        : "Unbekannter Fehler (kein Error-Text). Bitte neu laden.";
 
     toast({
       title,
@@ -84,7 +90,6 @@ export default function WelcomePage() {
       variant: "destructive",
     });
 
-    // Debug in Konsole (hilft extrem)
     console.error("❌ AUTH ERROR:", err);
   }
 
@@ -109,25 +114,23 @@ export default function WelcomePage() {
         throw new Error((data as any)?.message || t("loginFailed"));
       }
 
-      // PrivateKey holen oder neu generieren
+      // privateKey aus localStorage holen oder neu generieren
       const existingData = localStorage.getItem("user");
       let privateKey = "";
+
       if (existingData) {
         try {
           const parsed = JSON.parse(existingData);
           if (parsed?.username === loginUsername.trim()) privateKey = parsed.privateKey || "";
         } catch {}
       }
+
       if (!privateKey) {
         const kp = await generateKeyPair();
         privateKey = kp.privateKey;
       }
 
-      const userProfile = {
-        ...data.user,
-        privateKey,
-      };
-
+      const userProfile = { ...data.user, privateKey };
       profileProtection.storeProfile(userProfile);
 
       toast({
@@ -177,11 +180,7 @@ export default function WelcomePage() {
         throw new Error((data as any)?.message || t("registrationFailed"));
       }
 
-      const userProfile = {
-        ...data.user,
-        privateKey,
-      };
-
+      const userProfile = { ...data.user, privateKey };
       profileProtection.storeProfile(userProfile);
 
       toast({
