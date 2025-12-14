@@ -93,6 +93,57 @@
     background: var(--text-muted);
     animation: bounce 0.8s infinite;
   }
+
+  /* =======================================================
+     ✅ FIX für deinen markierten Fehler:
+     Input-Bar & Textarea WhatsApp-like, nicht zu hoch
+  ======================================================== */
+
+  /* Fixe Input-Bar unten (passt zu ChatView.tsx "chat-input-fixed") */
+  .chat-input-fixed {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    background: var(--bg-dark);
+    border-top: 1px solid var(--border);
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    /* verhindert "floating" / komische Lücken */
+    transform: translateZ(0);
+  }
+
+  /* Die Textarea selbst (passt zu ChatView.tsx "chat-textarea") */
+  .chat-textarea {
+    width: 100%;
+    background: color-mix(in hsl, var(--surface) 90%, black) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid color-mix(in hsl, var(--border) 85%, black) !important;
+
+    border-radius: 9999px !important;
+
+    /* ✅ Das ist der Kern-Fix: weniger Höhe + schöner zentriert */
+    min-height: 44px !important;
+    height: 44px !important;
+    line-height: 20px !important;
+    padding: 12px 14px !important;
+
+    resize: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+
+    overflow: hidden; /* verhindert „wackeln“ */
+  }
+
+  .chat-textarea::placeholder {
+    color: var(--text-muted) !important;
+    opacity: 1 !important;
+  }
+
+  .chat-textarea:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 2px color-mix(in hsl, var(--primary) 35%, transparent) !important;
+  }
 }
 
 /* =========================================================
