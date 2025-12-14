@@ -1,104 +1,201 @@
-import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import type { Express } from "express";
+import express from "express";
+import { createServer, type Server } from "http";
+import { WebSocketServer, WebSocket } from "ws";
+import crypto from "crypto";
+import { z } from "zod";
 
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+import { storage } from "./storage";
+import { loginUserSchema, wsMessageSchema, type WSMessage } from "@shared/schema";
 
-// ✅ CORS (Production: nur deine Render-Domain, Dev: offen)
-app.use((req, res, next) => {
-  const allowedOrigin =
-    process.env.NODE_ENV === "production"
-      ? "https://whisper3.onrender.com"
-      : "*";
+/* =========================
+   Helpers
+========================= */
 
-  res.header("Access-Control-Allow-Origin", allowedOrigin);
-  res.header("Vary", "Origin");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Key, Sec-WebSocket-Version, Connection, Upgrade"
-  );
+function hashPassword(password: string): string {
+  return crypto.createHash("sha256").update(password).digest("hex");
+}
 
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
+function verifyPassword(password: string, hash: string): boolean {
+  return hashPassword(password) === hash;
+}
 
-  next();
-});
+function toInt(v: any, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
 
-// ✅ API-GUARD: verhindert, dass /api/* jemals in SPA/Vite-Fallback landet
-// und gibt bei kaputten URLs sauber JSON zurück.
-app.use("/api", (req, res, next) => {
-  // req.originalUrl ist am verlässlichsten bei Express
-  const u = req.originalUrl || req.url || "";
-  if (!u || u.includes("undefined") || u.includes("[object Object]")) {
-    console.error("❌ Invalid API URL:", u);
-    return res.status(400).json({ ok: false, message: "Invalid URL" });
-  }
-  next();
-});
+function json(res: any, status: number, payload: any) {
+  return res.status(status).json(payload);
+}
 
-// ✅ Logger
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+/* =========================
+   Routes
+========================= */
 
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
+export async function registerRoutes(app: Express): Promise<Server> {
+  const server = createServer(app);
 
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+  /* -------------------------
+     HEALTH (WICHTIG!)
+  -------------------------- */
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "whisper3",
+      time: new Date().toISOString(),
+    });
+  });
+
+  /* -------------------------
+     REGISTER
+  -------------------------- */
+  app.post("/api/register", async (req, res) => {
+    try {
+      const username = String(req.body?.username || "").trim();
+      const password = String(req.body?.password || "");
+      const publicKey = String(req.body?.publicKey || "");
+
+      if (!username || !password || !publicKey) {
+        return json(res, 400, {
+          ok: false,
+          message: "username, password and publicKey are required",
+        });
       }
-      if (logLine.length > 80) logLine = logLine.slice(0, 79) + "…";
-      log(logLine);
+
+      const existing = await storage.getUserByUsername(username);
+      if (existing) {
+        return json(res, 409, {
+          ok: false,
+          message: "Username already exists",
+        });
+      }
+
+      const user = await storage.createUser({
+        username,
+        passwordHash: hashPassword(password),
+        publicKey,
+      });
+
+      return json(res, 200, {
+        ok: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          publicKey: user.publicKey,
+        },
+      });
+    } catch (err: any) {
+      console.error("REGISTER ERROR:", err);
+      return json(res, 500, {
+        ok: false,
+        message: "Registration failed",
+      });
     }
   });
 
-  next();
-});
+  /* -------------------------
+     LOGIN
+  -------------------------- */
+  app.post("/api/login", async (req, res) => {
+    try {
+      const parsed = loginUserSchema.parse(req.body);
 
-(async () => {
-  // ✅ Register API routes FIRST before Vite middleware
-  const server = await registerRoutes(app);
+      const user = await storage.getUserByUsername(parsed.username);
+      if (!user) {
+        return json(res, 401, {
+          ok: false,
+          message: "Invalid username or password",
+        });
+      }
 
-  // ✅ Error handling middleware (immer JSON für /api)
-  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
-    const status = err?.status || err?.statusCode || 500;
-    const message = err?.message || "Internal Server Error";
+      if (!verifyPassword(parsed.password, user.passwordHash)) {
+        return json(res, 401, {
+          ok: false,
+          message: "Invalid username or password",
+        });
+      }
 
-    if (req.path?.startsWith("/api")) {
-      res.status(status).json({ ok: false, message });
-      return;
+      return json(res, 200, {
+        ok: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          publicKey: user.publicKey,
+        },
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return json(res, 400, {
+          ok: false,
+          message: "Invalid request body",
+        });
+      }
+
+      console.error("LOGIN ERROR:", err);
+      return json(res, 500, {
+        ok: false,
+        message: "Login failed",
+      });
     }
-
-    res.status(status).json({ message });
   });
 
-  // ✅ Setup Vite AFTER all API routes are registered
-  if (app.get("env") === "development") {
-    await setupVite(app, server);
-  } else {
-    serveStatic(app);
-  }
+  /* =========================
+     WEBSOCKET (minimal stabil)
+  ========================= */
 
-  // Render: dynamischer Port; lokal fallback 5000
-  const port = Number(process.env.PORT) || 5000;
+  const clients = new Map<number, WebSocket>();
 
-  // Windows-friendly: lokal 127.0.0.1, production (Render) 0.0.0.0
-  const host = app.get("env") === "development" ? "127.0.0.1" : "0.0.0.0";
-
-  server.listen(port, host, () => {
-    log(`serving on http://${host}:${port}`);
+  const wss = new WebSocketServer({
+    server,
+    path: "/ws",
   });
-})();
+
+  wss.on("connection", (ws) => {
+    let userId: number | null = null;
+
+    ws.on("message", async (raw) => {
+      try {
+        const data = JSON.parse(raw.toString());
+        const msg = wsMessageSchema.parse(data) as WSMessage;
+
+        if (msg.type === "join") {
+          userId = msg.userId;
+          clients.set(userId, ws);
+          return;
+        }
+
+        if (msg.type === "message") {
+          if (!userId) return;
+
+          const chat = await storage.getOrCreateChatByParticipants(
+            msg.senderId,
+            msg.receiverId
+          );
+
+          const saved = await storage.createMessage({
+            chatId: chat.id,
+            senderId: msg.senderId,
+            receiverId: msg.receiverId,
+            content: msg.content,
+            messageType: msg.messageType,
+            expiresAt: new Date(Date.now() + 86400 * 1000),
+          });
+
+          const target = clients.get(msg.receiverId);
+          if (target?.readyState === WebSocket.OPEN) {
+            target.send(JSON.stringify({ type: "new_message", message: saved }));
+          }
+        }
+      } catch (e) {
+        console.error("WS ERROR:", e);
+      }
+    });
+
+    ws.on("close", () => {
+      if (userId) clients.delete(userId);
+    });
+  });
+
+  return server;
+}
