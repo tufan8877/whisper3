@@ -1,10 +1,25 @@
-import { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useLanguage } from "@/lib/i18n";
 import Message from "./message";
-import { Paperclip, Send, Smile, Lock, Clock, MoreVertical, Shield, ArrowLeft } from "lucide-react";
+import {
+  Paperclip,
+  Send,
+  Smile,
+  Lock,
+  Clock,
+  MoreVertical,
+  Shield,
+  ArrowLeft,
+} from "lucide-react";
 import type { User, Chat, Message as MessageType } from "@shared/schema";
 
 interface ChatViewProps {
@@ -41,7 +56,6 @@ export default function ChatView({
   };
 
   useEffect(() => {
-    // Mobile Safari braucht manchmal mehrere Versuche
     if (messages.length > 0) {
       [0, 80, 180].forEach((d) => setTimeout(() => scrollToBottom(d !== 0), d));
     }
@@ -52,12 +66,15 @@ export default function ChatView({
   }, [selectedChat]);
 
   const handleSendMessage = () => {
-    if (!messageInput.trim() || !selectedChat) return;
+    const text = messageInput.trim();
+    if (!text || !selectedChat) return;
+
     if (!isConnected) {
       alert(t("notConnected"));
       return;
     }
-    onSendMessage(messageInput.trim(), "text", parseInt(destructTimer, 10));
+
+    onSendMessage(text, "text", parseInt(destructTimer, 10));
     setMessageInput("");
     setTimeout(() => scrollToBottom(true), 50);
   };
@@ -88,6 +105,7 @@ export default function ChatView({
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = reader.result as string;
+        // images: ms (weil base64 groß -> timer in ms war bei dir so)
         onSendMessage(base64, "image", parseInt(destructTimer, 10) * 1000);
       };
       reader.onerror = () => alert(t("failedToReadFile"));
@@ -112,7 +130,6 @@ export default function ChatView({
     cameraInput.onchange = (e) => {
       const f = (e.target as HTMLInputElement).files?.[0];
       if (!f) return;
-      // Fake event
       handleFileUpload({ target: { files: [f] } } as any);
     };
     cameraInput.click();
@@ -142,35 +159,36 @@ export default function ChatView({
   }
 
   return (
-    // ✅ 100dvh ist wichtig für iPhone Safari
-    <div className="flex-1 flex flex-col h-[100dvh] bg-background">
+    <div className="flex-1 flex flex-col h-[100dvh] bg-background chat-shell no-x-scroll">
       {/* Header */}
-      <div className="bg-background border-b border-border p-3 md:p-4 flex-shrink-0">
+      <div className="bg-background border-b border-border p-3 md:p-4 flex-shrink-0 chat-header">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <Button
               variant="ghost"
               size="icon"
               onClick={onBackToList}
-              className="md:hidden w-10 h-10 rounded-full flex-shrink-0"
+              className="md:hidden w-10 h-10 rounded-full flex-shrink-0 touch-target"
               aria-label="Back"
             >
               <ArrowLeft className="w-4 h-4" />
             </Button>
 
-            <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
+            <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0 avatar-mobile">
               <span className="text-muted-foreground">👤</span>
             </div>
 
             <div className="min-w-0">
-              <h3 className="font-semibold text-foreground truncate">{selectedChat.otherUser.username}</h3>
-              <div className="flex items-center gap-2 text-sm">
+              <h3 className="font-semibold text-foreground truncate">
+                {selectedChat.otherUser.username}
+              </h3>
+              <div className="flex items-center gap-2 text-sm min-w-0">
                 <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`} />
                 <span className={isConnected ? "text-green-400" : "text-red-400"}>
                   {isConnected ? t("connected") : t("disconnected")}
                 </span>
                 <span className="text-muted-foreground">•</span>
-                <Lock className="w-3 h-3 text-accent" />
+                <Lock className="w-3 h-3 text-accent flex-shrink-0" />
                 <span className="text-muted-foreground truncate">{t("realTimeChat")}</span>
               </div>
             </div>
@@ -197,7 +215,12 @@ export default function ChatView({
               </Select>
             </div>
 
-            <Button variant="ghost" size="icon" className="w-10 h-10 rounded-full" aria-label="Menu">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-10 h-10 rounded-full touch-target"
+              aria-label="Menu"
+            >
               <MoreVertical className="w-5 h-5" />
             </Button>
           </div>
@@ -206,8 +229,7 @@ export default function ChatView({
 
       {/* Messages */}
       <div
-        className="flex-1 overflow-y-auto px-3 md:px-4 py-3 space-y-3 custom-scrollbar"
-        // ✅ Platz für fixed input bar unten
+        className="chat-messages custom-scrollbar px-3 md:px-4 py-3 space-y-3"
         style={{ paddingBottom: "calc(92px + env(safe-area-inset-bottom))" }}
       >
         <div className="text-center">
@@ -218,7 +240,12 @@ export default function ChatView({
         </div>
 
         {messages.map((m) => (
-          <Message key={m.id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
+          <Message
+            key={m.id}
+            message={m}
+            isOwn={m.senderId === currentUser.id}
+            otherUser={selectedChat.otherUser}
+          />
         ))}
 
         {isTyping && (
@@ -239,14 +266,14 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ✅ Input Bar fixed (WhatsApp like) */}
-      <div className="chat-input-fixed bg-background border-t border-border">
+      {/* Input Bar */}
+      <div className="chat-input-fixed chat-input-area">
         <div className="px-2 py-2 flex items-end gap-2 flex-nowrap">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => fileInputRef.current?.click()}
-            className="w-11 h-11 rounded-full flex-shrink-0"
+            className="w-11 h-11 rounded-full flex-shrink-0 touch-target"
             title="Upload"
           >
             <Paperclip className="w-5 h-5" />
@@ -256,7 +283,7 @@ export default function ChatView({
             variant="ghost"
             size="icon"
             onClick={handleCameraCapture}
-            className="w-11 h-11 rounded-full flex-shrink-0"
+            className="w-11 h-11 rounded-full flex-shrink-0 touch-target"
             title="Camera"
           >
             📷
@@ -281,18 +308,16 @@ export default function ChatView({
             </Button>
           </div>
 
-          {/* ✅ Send Button immer sichtbar */}
           <Button
             onClick={handleSendMessage}
             disabled={!messageInput.trim() || !isConnected}
-            className="w-11 h-11 rounded-full flex-shrink-0 bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white"
+            className="w-11 h-11 rounded-full flex-shrink-0 bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white touch-target"
             aria-label="Send"
           >
             <Send className="w-5 h-5" />
           </Button>
         </div>
 
-        {/* ✅ Kompakte Statuszeile (mobile-friendly) */}
         <div className="px-3 pb-[calc(10px+env(safe-area-inset-bottom))] text-xs text-text-muted flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <Lock className="w-3 h-3 text-accent flex-shrink-0" />
