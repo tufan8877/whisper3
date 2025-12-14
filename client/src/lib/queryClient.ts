@@ -1,90 +1,100 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 /**
- * Wir wollen auf Render + lokal + iOS Safari + Android immer sauber arbeiten.
- * Deshalb: API Calls IMMER über relative Pfade wie "/api/login".
+ * Robust JSON/Text error reader.
+ * Works even if server sends HTML (Render / Vite fallback).
  */
-
-function normalizeApiPath(url: string): string {
-  if (!url || typeof url !== "string") {
-    throw new Error("Invalid URL: empty");
-  }
-
-  // wenn jemand "api/login" übergibt -> fix auf "/api/login"
-  if (url.startsWith("api/")) return "/" + url;
-
-  // wenn jemand "http://..." übergibt -> in SAME-ORIGIN umwandeln (nur pathname+query)
-  if (/^https?:\/\//i.test(url)) {
-    try {
-      const u = new URL(url);
-      return u.pathname + u.search;
-    } catch {
-      throw new Error("Invalid URL");
-    }
-  }
-
-  // relative ohne leading slash kann auf subpages falsch werden (z.B. /chat -> chat/api/login)
-  if (!url.startsWith("/")) {
-    return "/" + url;
-  }
-
-  return url;
-}
-
-async function readErrorMessage(res: Response): Promise<string> {
+async function readErrorBody(res: Response): Promise<string> {
   try {
-    const ct = res.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const data: any = await res.json();
-      return data?.message || data?.error || JSON.stringify(data);
-    }
     const text = await res.text();
     return text || res.statusText;
   } catch {
-    return res.statusText || "Request failed";
+    return res.statusText;
   }
 }
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const msg = await readErrorMessage(res);
-    throw new Error(`${res.status}: ${msg}`);
+    const body = await readErrorBody(res);
+    throw new Error(`${res.status}: ${body}`);
   }
 }
 
+/**
+ * IMPORTANT:
+ * - Always use relative API paths like "/api/login"
+ * - Do NOT build absolute URLs with new URL() in the browser -> iOS can throw "Invalid URL"
+ */
+function normalizePath(url: string) {
+  if (!url) return "/";
+
+  // If it already starts with http(s), keep it
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+
+  // Ensure leading slash for relative calls
+  if (!url.startsWith("/")) return `/${url}`;
+  return url;
+}
+
+/**
+ * Generic request (kept for existing code).
+ */
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown
+  data?: unknown,
 ): Promise<Response> {
-  const finalUrl = normalizeApiPath(url);
+  const safeUrl = normalizePath(url);
 
-  const res = await fetch(finalUrl, {
+  const res = await fetch(safeUrl, {
     method,
     headers: data ? { "Content-Type": "application/json" } : undefined,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
 
+  // Don’t read body twice; just throw with body once if needed
   await throwIfResNotOk(res);
   return res;
 }
 
 /**
- * ✅ postJson: der Helper den du wolltest.
- * Nutze den in WelcomePage für Login & Register.
+ * ✅ New helper you asked for: postJson
+ * Returns parsed JSON and throws clean errors.
  */
-export async function postJson<T>(url: string, data?: unknown): Promise<T> {
-  const res = await apiRequest("POST", url, data);
-  return res.json() as Promise<T>;
-}
+export async function postJson<TResponse = any>(
+  url: string,
+  data?: unknown,
+  init?: RequestInit
+): Promise<TResponse> {
+  const safeUrl = normalizePath(url);
 
-/**
- * Optional helper für GET JSON, falls du es brauchst.
- */
-export async function getJson<T>(url: string): Promise<T> {
-  const res = await apiRequest("GET", url);
-  return res.json() as Promise<T>;
+  const res = await fetch(safeUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+    body: data !== undefined ? JSON.stringify(data) : undefined,
+    credentials: "include",
+    ...init,
+  });
+
+  if (!res.ok) {
+    const body = await readErrorBody(res);
+    throw new Error(`${res.status}: ${body}`);
+  }
+
+  // In case server responds with empty body
+  const txt = await res.text();
+  if (!txt) return {} as TResponse;
+
+  try {
+    return JSON.parse(txt) as TResponse;
+  } catch {
+    // If backend returns non-json, still return text as any
+    return { raw: txt } as any;
+  }
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
@@ -92,19 +102,22 @@ type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
-  ({ on401 }) =>
+  ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const rawUrl = String(queryKey[0]);
-    const url = normalizeApiPath(rawUrl);
+    const url = normalizePath(queryKey[0] as string);
 
     const res = await fetch(url, { credentials: "include" });
 
-    if (on401 === "returnNull" && res.status === 401) {
+    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null as any;
     }
 
     await throwIfResNotOk(res);
-    return (await res.json()) as T;
+
+    const txt = await res.text();
+    if (!txt) return {} as T;
+
+    return JSON.parse(txt) as T;
   };
 
 export const queryClient = new QueryClient({
