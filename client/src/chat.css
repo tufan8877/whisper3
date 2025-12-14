@@ -1,153 +1,167 @@
-/* =========================
-   GLOBAL RESET
-========================= */
-* {
-  box-sizing: border-box;
-  -webkit-tap-highlight-color: transparent;
+/* =========================================================
+   COMPONENT HELPERS
+========================================================= */
+@layer components {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .avatar-mobile {
+    width: 40px;
+    height: 40px;
+  }
+
+  .back-button-mobile {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Message bubble – WhatsApp-like */
+  .message-bubble {
+    @apply rounded-2xl px-3 py-2;
+    max-width: min(78vw, 420px);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .message-bubble.sent {
+    @apply text-white rounded-tr-md;
+    background: var(--primary);
+  }
+
+  .message-bubble.received {
+    @apply text-foreground rounded-tl-md;
+    background: color-mix(in hsl, var(--surface) 92%, black);
+  }
+
+  /* =======================================================
+     Chat Layout – wichtig für viele Messages + Mobile
+  ======================================================== */
+  .chat-shell {
+    height: 100dvh; /* besser als 100vh auf iOS */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden; /* verhindert seitliches Ziehen */
+  }
+
+  .chat-header {
+    flex: 0 0 auto;
+  }
+
+  .chat-messages {
+    flex: 1 1 auto;
+    min-height: 0; /* WICHTIG damit overflow-y scrollt */
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding-bottom: 0.75rem;
+  }
+
+  .chat-input-area {
+    flex: 0 0 auto;
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    background: var(--bg-dark);
+    border-top: 1px solid var(--border);
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+
+  .chat-input {
+    width: 100%;
+    border-radius: 9999px !important;
+  }
+
+  .no-x-scroll {
+    overflow-x: hidden !important;
+  }
+
+  /* Typing indicator */
+  .typing-indicator {
+    display: flex;
+    gap: 4px;
+  }
+
+  .typing-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--text-muted);
+    animation: bounce 0.8s infinite;
+  }
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: #050b18;
-  color: #e5e7eb;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    Roboto, Helvetica, Arial, sans-serif;
-  overscroll-behavior: none;
+/* =========================================================
+   ANIMATIONS
+========================================================= */
+@keyframes bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.65;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
 }
 
-/* =========================
-   IOS SAFE VIEWPORT FIX
-========================= */
-:root {
-  --safe-bottom: env(safe-area-inset-bottom);
-  --safe-top: env(safe-area-inset-top);
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* =========================
-   CHAT PAGE LAYOUT
-========================= */
-.chat-page {
-  height: 100dvh; /* 🔴 WICHTIG */
-  display: flex;
-  flex-direction: column;
-  background: #050b18;
+.animate-fade-in {
+  animation: fadeIn 0.22s ease-out;
 }
 
-/* =========================
-   CHAT HEADER
-========================= */
-.chat-header {
-  flex-shrink: 0;
-  padding: 12px 16px;
-  padding-top: calc(12px + var(--safe-top));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+/* =========================================================
+   SCROLLBAR
+========================================================= */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
 }
 
-/* =========================
-   MESSAGE LIST
-========================= */
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  padding-bottom: 12px;
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-/* =========================
-   MESSAGE BUBBLES
-========================= */
-.message {
-  max-width: 75%;
-  padding: 10px 14px;
-  border-radius: 16px;
-  margin-bottom: 8px;
-  word-break: break-word;
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: hsl(240, 5%, 44%);
+  border-radius: 9999px;
 }
 
-.message.sent {
-  margin-left: auto;
-  background: #2563eb;
-  color: #fff;
-  border-bottom-right-radius: 6px;
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: hsl(240, 5%, 54%);
 }
 
-.message.received {
-  margin-right: auto;
-  background: #111827;
-  color: #e5e7eb;
-  border-bottom-left-radius: 6px;
-}
+/* =========================================================
+   MOBILE TUNING
+========================================================= */
+@media (max-width: 768px) {
+  body {
+    overscroll-behavior: contain;
+  }
 
-/* =========================
-   INPUT BAR (FIXED & SAFE)
-========================= */
-.chat-input-wrapper {
-  position: sticky;
-  bottom: 0;
-  background: #050b18;
-  padding: 10px 12px;
-  padding-bottom: calc(10px + var(--safe-bottom));
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
+  button,
+  [role="button"],
+  .touch-target {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
 
-/* =========================
-   INPUT ROW
-========================= */
-.chat-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* =========================
-   TEXTAREA
-========================= */
-.chat-textarea {
-  flex: 1;
-  background: #0b1220;
-  color: #e5e7eb;
-  border: none;
-  border-radius: 18px;
-  padding: 10px 14px;
-  resize: none;
-  outline: none;
-  min-height: 44px;
-  max-height: 120px;
-  font-size: 16px;
-}
-
-.chat-textarea::placeholder {
-  color: #9ca3af;
-}
-
-/* =========================
-   SEND BUTTON
-========================= */
-.chat-send {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: none;
-  background: #2563eb;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* =========================
-   SEARCH INPUT FIX
-========================= */
-.chat-search input {
-  background: #0b1220;
-  color: #e5e7eb;
-}
-
-.chat-search input::placeholder {
-  color: #9ca3af;
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }
