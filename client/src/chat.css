@@ -37,14 +37,17 @@
   }
 
   /* =======================================================
-     Chat Layout – wichtig für viele Messages + Mobile
+     Chat Layout – stabil auf iOS/Android
   ======================================================== */
   .chat-shell {
-    height: 100dvh; /* besser als 100vh auf iOS */
+    /* Fallbacks */
+    height: 100vh;
+    height: 100svh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    overflow: hidden; /* verhindert seitliches Ziehen */
+    overflow: hidden;
   }
 
   .chat-header {
@@ -53,31 +56,71 @@
 
   .chat-messages {
     flex: 1 1 auto;
-    min-height: 0; /* WICHTIG damit overflow-y scrollt */
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    padding-bottom: 0.75rem;
+
+    /* Platz für Input-Bar unten (sticky) */
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
   }
 
-  .chat-input-area {
-    flex: 0 0 auto;
+  /* =======================================================
+     ✅ INPUT BAR – STICKY (statt fixed) für alle Handys/Browser
+  ======================================================== */
+  .chat-input-fixed {
     position: sticky;
     bottom: 0;
-    z-index: 20;
+    z-index: 50;
     background: var(--bg-dark);
     border-top: 1px solid var(--border);
-    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+
+    /* safe-area */
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+
+    /* verhindert flackern */
+    transform: translateZ(0);
   }
 
-  .chat-input {
+  /* Textarea WhatsApp-like: immer gleiche Höhe, sauber zentriert */
+  .chat-textarea {
     width: 100%;
+    background: color-mix(in hsl, var(--surface) 90%, black) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid color-mix(in hsl, var(--border) 85%, black) !important;
     border-radius: 9999px !important;
+
+    /* ✅ stabil auf allen Geräten */
+    min-height: 44px !important;
+    height: 44px !important;
+    line-height: 20px !important;
+    padding: 12px 14px !important;
+
+    resize: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+
+    overflow: hidden !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
   }
 
-  .no-x-scroll {
-    overflow-x: hidden !important;
+  .chat-textarea::placeholder {
+    color: var(--text-muted) !important;
+    opacity: 1 !important;
+  }
+
+  .chat-textarea:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 2px color-mix(in hsl, var(--primary) 35%, transparent) !important;
+  }
+
+  /* iOS: verhindert Zoom beim Tippen */
+  @media (max-width: 768px) {
+    .chat-textarea {
+      font-size: 16px !important;
+    }
   }
 
   /* Typing indicator */
@@ -92,57 +135,6 @@
     border-radius: 9999px;
     background: var(--text-muted);
     animation: bounce 0.8s infinite;
-  }
-
-  /* =======================================================
-     ✅ FIX für deinen markierten Fehler:
-     Input-Bar & Textarea WhatsApp-like, nicht zu hoch
-  ======================================================== */
-
-  /* Fixe Input-Bar unten (passt zu ChatView.tsx "chat-input-fixed") */
-  .chat-input-fixed {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-dark);
-    border-top: 1px solid var(--border);
-    padding-bottom: calc(10px + env(safe-area-inset-bottom));
-    /* verhindert "floating" / komische Lücken */
-    transform: translateZ(0);
-  }
-
-  /* Die Textarea selbst (passt zu ChatView.tsx "chat-textarea") */
-  .chat-textarea {
-    width: 100%;
-    background: color-mix(in hsl, var(--surface) 90%, black) !important;
-    color: var(--text-primary) !important;
-    border: 1px solid color-mix(in hsl, var(--border) 85%, black) !important;
-
-    border-radius: 9999px !important;
-
-    /* ✅ Das ist der Kern-Fix: weniger Höhe + schöner zentriert */
-    min-height: 44px !important;
-    height: 44px !important;
-    line-height: 20px !important;
-    padding: 12px 14px !important;
-
-    resize: none !important;
-    outline: none !important;
-    box-shadow: none !important;
-
-    overflow: hidden; /* verhindert „wackeln“ */
-  }
-
-  .chat-textarea::placeholder {
-    color: var(--text-muted) !important;
-    opacity: 1 !important;
-  }
-
-  .chat-textarea:focus {
-    border-color: var(--primary) !important;
-    box-shadow: 0 0 0 2px color-mix(in hsl, var(--primary) 35%, transparent) !important;
   }
 }
 
