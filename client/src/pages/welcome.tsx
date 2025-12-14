@@ -7,86 +7,33 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { generateKeyPair } from "@/lib/crypto";
 import { useToast } from "@/hooks/use-toast";
+import { postJson } from "@/lib/queryClient";
 import { useLanguage } from "@/lib/i18n";
 import { LanguageSelector } from "@/components/ui/language-selector";
 import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
-import {
-  EyeOff,
-  Shield,
-  Clock,
-  Database,
-  LogIn,
-  UserPlus,
-} from "lucide-react";
+
+import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 
-type ApiErrorBody = {
-  ok?: boolean;
-  message?: string;
-  error?: string;
-  errors?: any;
+type ApiUser = {
+  id: number;
+  username: string;
+  publicKey?: string;
 };
 
-type ApiUser = { id: number; username: string; publicKey: string };
+type AuthResponse = {
+  user: ApiUser;
+};
 
-type ApiUserResponse =
-  | { user: ApiUser }
-  | ApiErrorBody;
+function normalizeErrMessage(err: any) {
+  const msg = String(err?.message || err || "Unknown error");
 
-async function postJson<T = any>(url: string, body: any): Promise<T> {
-  // relative URL => funktioniert überall (Render, localhost, iOS Safari)
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-  });
+  // typische fetch Fehler
+  if (msg.includes("Invalid URL")) return "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
+  if (msg.includes("Failed to fetch")) return "Server nicht erreichbar (Netzwerk/CORS). Bitte Seite neu laden und erneut versuchen.";
 
-  let data: any = null;
-  try {
-    data = await res.json();
-  } catch {
-    // ignore
-  }
-
-  if (!res.ok) {
-    const msg =
-      data?.message ||
-      data?.error ||
-      `HTTP ${res.status} ${res.statusText || ""}`.trim();
-    const err = new Error(msg);
-    (err as any).status = res.status;
-    (err as any).data = data;
-    throw err;
-  }
-
-  return data as T;
-}
-
-function friendlyErrorMessage(err: any, fallback: string) {
-  const msg =
-    err?.message ||
-    err?.data?.message ||
-    err?.data?.error ||
-    fallback;
-
-  // Ein paar typische Fälle schöner machen
-  if (typeof msg === "string") {
-    if (msg.toLowerCase().includes("invalid username or password")) {
-      return "Benutzername oder Passwort ist falsch.";
-    }
-    if (msg.toLowerCase().includes("username already exists")) {
-      return "Dieser Benutzername ist bereits vergeben.";
-    }
-    if (msg.toLowerCase().includes("invalid input")) {
-      return "Bitte überprüfe deine Eingaben.";
-    }
-    if (msg.toLowerCase().includes("invalid url")) {
-      return "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
-    }
-  }
-
+  // apiRequest Fehler: "400: {...}" oder "401: ..."
   return msg;
 }
 
@@ -104,19 +51,16 @@ export default function WelcomePage() {
   const { toast } = useToast();
   const { t } = useLanguage();
 
-  // Session persistence nur 1x initialisieren
+  // Initialize session persistence on mount (nur 1x!)
   useEffect(() => {
     SessionPersistence.getInstance().initialize();
   }, []);
 
   const handleLogin = async () => {
-    const u = loginUsername.trim();
-    const p = loginPassword;
-
-    if (!u || !p) {
+    if (!loginUsername.trim() || !loginPassword.trim()) {
       toast({
         title: t("error"),
-        description: t("enterCredentials") || "Bitte Benutzername & Passwort eingeben.",
+        description: t("usernameEmpty"),
         variant: "destructive",
       });
       return;
@@ -124,25 +68,25 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const data = await postJson<ApiUserResponse>("/api/login", {
-        username: u,
-        password: p,
+      // ✅ IMMER absolute API paths mit leading slash!
+      const data = await postJson<AuthResponse>("/api/login", {
+        username: loginUsername.trim(),
+        password: loginPassword,
       });
 
-      if (!("user" in data) || !data.user?.id) {
-        throw new Error((data as any)?.message || t("loginFailed"));
+      if (!data?.user?.id) {
+        throw new Error("Login response invalid (missing user)");
       }
 
-      // PrivateKey wiederverwenden, wenn dieser Username schon mal lokal da war
-      let privateKey = "";
+      // privateKey aus storage holen (wenn vorhanden)
       const existingData = localStorage.getItem("user");
+      let privateKey = "";
+
       if (existingData) {
-        try {
-          const parsed = JSON.parse(existingData);
-          if (parsed?.username === u && parsed?.privateKey) {
-            privateKey = parsed.privateKey;
-          }
-        } catch {}
+        const parsed = JSON.parse(existingData);
+        if (parsed?.username === data.user.username && parsed?.privateKey) {
+          privateKey = parsed.privateKey;
+        }
       }
 
       if (!privateKey) {
@@ -158,57 +102,57 @@ export default function WelcomePage() {
       profileProtection.storeProfile(userProfile);
 
       toast({
-        title: t("welcomeBack") || "Willkommen zurück!",
-        description: t("loginSuccess") || "Login erfolgreich.",
+        title: t("welcomeBack"),
+        description: t("loginSuccess"),
       });
 
       setLocation("/chat");
     } catch (err: any) {
       toast({
-        title: t("error") || "Fehler",
-        description: friendlyErrorMessage(err, t("loginFailed") || "Login fehlgeschlagen."),
+        title: t("error"),
+        description: normalizeErrMessage(err) || t("loginFailed"),
         variant: "destructive",
       });
+      console.error("❌ Login failed:", err);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleStartChatting = async () => {
-    const u = username.trim();
-    const p = registerPassword;
+    const finalUsername = username.trim();
 
-    if (!u) {
+    if (!finalUsername) {
       toast({
-        title: t("usernameRequired") || "Benutzername erforderlich",
-        description: t("enterUsername") || "Bitte Benutzername eingeben.",
+        title: t("error"),
+        description: t("enterUsername"),
         variant: "destructive",
       });
       return;
     }
 
-    if (u.length < 3) {
+    if (finalUsername.length < 3) {
       toast({
-        title: t("usernameTooShort") || "Benutzername zu kurz",
-        description: t("usernameMinLength") || "Mindestens 3 Zeichen.",
+        title: t("error"),
+        description: t("usernameMinLength"),
         variant: "destructive",
       });
       return;
     }
 
-    if (!p.trim()) {
+    if (!registerPassword.trim()) {
       toast({
-        title: t("passwordRequired") || "Passwort erforderlich",
-        description: t("enterPassword") || "Bitte Passwort eingeben.",
+        title: t("error"),
+        description: t("enterPassword"),
         variant: "destructive",
       });
       return;
     }
 
-    if (p.length < 6) {
+    if (registerPassword.length < 6) {
       toast({
-        title: t("passwordTooShort") || "Passwort zu kurz",
-        description: t("passwordMinLength") || "Mindestens 6 Zeichen.",
+        title: t("error"),
+        description: t("passwordMinLength"),
         variant: "destructive",
       });
       return;
@@ -218,14 +162,15 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiUserResponse>("/api/register", {
-        username: u,
-        password: p,
+      // ✅ IMMER absolute API paths mit leading slash!
+      const data = await postJson<AuthResponse>("/api/register", {
+        username: finalUsername,
+        password: registerPassword,
         publicKey,
       });
 
-      if (!("user" in data) || !data.user?.id) {
-        throw new Error((data as any)?.message || t("accountCreationFailed"));
+      if (!data?.user?.id) {
+        throw new Error("Register response invalid (missing user)");
       }
 
       const userProfile = {
@@ -236,17 +181,18 @@ export default function WelcomePage() {
       profileProtection.storeProfile(userProfile);
 
       toast({
-        title: t("welcomeToWhispergram") || "Willkommen!",
-        description: t("accountCreated") || "Konto erstellt.",
+        title: t("welcomeToWhispergram"),
+        description: t("accountCreated"),
       });
 
       setLocation("/chat");
     } catch (err: any) {
       toast({
-        title: t("registrationFailed") || "Registrierung fehlgeschlagen",
-        description: friendlyErrorMessage(err, t("accountCreationFailed") || "Konto konnte nicht erstellt werden."),
+        title: t("registrationFailed"),
+        description: normalizeErrMessage(err) || t("accountCreationFailed"),
         variant: "destructive",
       });
+      console.error("❌ Registration failed:", err);
     } finally {
       setIsLoading(false);
     }
@@ -293,9 +239,8 @@ export default function WelcomePage() {
                 </TabsList>
 
                 <TabsContent value="register" className="space-y-4">
-                  <h3 className="text-lg font-semibold text-foreground">
-                    {t("createAccount")}
-                  </h3>
+                  <h3 className="text-lg font-semibold text-foreground">{t("createAccount")}</h3>
+
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
@@ -304,7 +249,6 @@ export default function WelcomePage() {
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                       autoCapitalize="none"
                       autoCorrect="off"
-                      spellCheck={false}
                     />
                     <Input
                       type="password"
@@ -313,10 +257,9 @@ export default function WelcomePage() {
                       onChange={(e) => setRegisterPassword(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                     />
-                    <p className="text-sm text-muted-foreground">
-                      {t("chooseUsernameHint")}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("chooseUsernameHint")}</p>
                   </div>
+
                   <Button
                     onClick={handleStartChatting}
                     disabled={isLoading || !registerPassword || !username.trim()}
@@ -327,9 +270,8 @@ export default function WelcomePage() {
                 </TabsContent>
 
                 <TabsContent value="login" className="space-y-4">
-                  <h3 className="text-lg font-semibold text-foreground">
-                    {t("login")}
-                  </h3>
+                  <h3 className="text-lg font-semibold text-foreground">{t("login")}</h3>
+
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
@@ -338,7 +280,6 @@ export default function WelcomePage() {
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                       autoCapitalize="none"
                       autoCorrect="off"
-                      spellCheck={false}
                     />
                     <Input
                       type="password"
@@ -347,10 +288,9 @@ export default function WelcomePage() {
                       onChange={(e) => setLoginPassword(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                     />
-                    <p className="text-sm text-muted-foreground">
-                      {t("enterCredentials")}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("enterCredentials")}</p>
                   </div>
+
                   <Button
                     onClick={handleLogin}
                     disabled={isLoading || !loginUsername.trim() || !loginPassword.trim()}
@@ -366,9 +306,8 @@ export default function WelcomePage() {
 
         {/* Features */}
         <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">
-            {t("features")}
-          </h3>
+          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
@@ -412,12 +351,13 @@ export default function WelcomePage() {
           </div>
         </div>
 
-        {/* Footer */}
+        {/* Links */}
         <div className="text-center space-y-4 pt-8 border-t border-border/50">
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">{t("messagesNotStored")}</p>
             <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
+
           <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-6">
             <button
               onClick={() => setLocation("/faq")}
@@ -425,7 +365,7 @@ export default function WelcomePage() {
             >
               {t("frequentlyAskedQuestions")}
             </button>
-            <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full"></div>
+            <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full" />
             <button
               onClick={() => setLocation("/imprint")}
               className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
