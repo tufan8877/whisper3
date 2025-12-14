@@ -2,6 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
+@import "./chat.css";
+
 /* =========================================================
    THEME / CSS VARIABLES
 ========================================================= */
@@ -69,16 +71,17 @@
 
   body {
     @apply font-sans antialiased bg-background text-foreground;
-    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      sans-serif;
 
     background-color: var(--bg-dark);
     color: var(--text-primary);
 
-    /* Wichtig gegen seitliches Ziehen */
+    /* wichtig gegen seitliches Ziehen */
     overflow-x: hidden;
   }
 
-  /* Damit iOS/Android nicht seitlich "rubberband"en */
+  /* iOS/Android seitliches “rubberband” verhindern */
   #root {
     height: 100%;
     overflow-x: hidden;
@@ -109,7 +112,8 @@
   [role="textbox"]:focus,
   [role="combobox"]:focus {
     outline: none !important;
-    box-shadow: 0 0 0 2px color-mix(in hsl, var(--primary) 35%, transparent) !important;
+    box-shadow: 0 0 0 2px
+      color-mix(in hsl, var(--primary) 35%, transparent) !important;
     border-color: var(--primary) !important;
   }
 
@@ -121,174 +125,5 @@
     [role="textbox"] {
       font-size: 16px !important;
     }
-  }
-}
-
-/* =========================================================
-   COMPONENT HELPERS
-========================================================= */
-@layer components {
-  .touch-target {
-    min-height: 44px;
-    min-width: 44px;
-  }
-
-  .avatar-mobile {
-    width: 40px;
-    height: 40px;
-  }
-
-  .back-button-mobile {
-    min-height: 44px;
-    min-width: 44px;
-  }
-
-  /* Message bubble – WhatsApp-like */
-  .message-bubble {
-    @apply rounded-2xl px-3 py-2;
-    max-width: min(78vw, 420px);
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
-  .message-bubble.sent {
-    @apply text-white rounded-tr-md;
-    background: var(--primary);
-  }
-
-  .message-bubble.received {
-    @apply text-foreground rounded-tl-md;
-    background: color-mix(in hsl, var(--surface) 92%, black);
-  }
-
-  /* =======================================================
-     Chat Layout – wichtig für viele Messages + Mobile
-     (Header fixed, Messages scroll, Input sticky)
-  ======================================================== */
-  .chat-shell {
-    height: 100dvh; /* besser als 100vh auf iOS */
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow: hidden; /* verhindert seitliches Ziehen */
-  }
-
-  .chat-header {
-    flex: 0 0 auto;
-  }
-
-  .chat-messages {
-    flex: 1 1 auto;
-    min-height: 0; /* WICHTIG damit overflow-y wirklich scrollt */
-    overflow-y: auto;
-    overflow-x: hidden;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-    padding-bottom: 0.75rem;
-  }
-
-  .chat-input-area {
-    flex: 0 0 auto;
-    position: sticky;
-    bottom: 0;
-    z-index: 20;
-    background: var(--bg-dark);
-    border-top: 1px solid var(--border);
-    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
-  }
-
-  .chat-input {
-    width: 100%;
-    border-radius: 9999px !important;
-  }
-
-  /* verhindert horizontales “Wandern” */
-  .no-x-scroll {
-    overflow-x: hidden !important;
-  }
-
-  /* Typing indicator */
-  .typing-indicator {
-    display: flex;
-    gap: 4px;
-  }
-  .typing-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 9999px;
-    background: var(--text-muted);
-    animation: bounce 0.8s infinite;
-  }
-}
-
-/* =========================================================
-   ANIMATIONS
-========================================================= */
-@keyframes bounce {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.65;
-  }
-  40% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.22s ease-out;
-}
-
-/* =========================================================
-   SCROLLBAR (optional)
-========================================================= */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: hsl(240, 5%, 44%);
-  border-radius: 9999px;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: hsl(240, 5%, 54%);
-}
-
-/* =========================================================
-   MOBILE TUNING
-========================================================= */
-@media (max-width: 768px) {
-  /* verhindert “Rubber band” */
-  body {
-    overscroll-behavior: contain;
-  }
-
-  /* Buttons leichter zu treffen */
-  button,
-  [role="button"],
-  .touch-target {
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  /* Safe-area helper */
-  .safe-area-inset-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
   }
 }
