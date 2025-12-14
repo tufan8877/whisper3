@@ -2,193 +2,210 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===============================
-   ROOT THEME
-================================ */
+/* =========================================================
+   WHISPERGRAM / WHATSAPP-LIKE BASE THEME + MOBILE FIXES
+   - Kein horizontal scroll
+   - Chat-Layout wie WhatsApp
+   - Bubbles max 78% Breite
+   - Sauberes Umbrichen (kein Buchstaben-Umbruch)
+   - Input unten + Safe Area (iPhone)
+   ========================================================= */
+
 :root {
-  --bg-dark: #0b1220;
-  --surface: #111827;
-  --border: #1f2937;
-  --text-primary: #f9fafb;
-  --text-muted: #9ca3af;
-  --primary: #3b82f6;
+  --background: hsl(222, 84%, 5%);
+  --foreground: hsl(210, 40%, 98%);
+
+  --muted: hsl(240, 3.7%, 15.9%);
+  --muted-foreground: hsl(215, 20%, 65%);
+
+  --card: hsl(215, 28%, 17%);
+  --card-foreground: hsl(210, 40%, 98%);
+
+  --border: hsl(240, 3.7%, 15.9%);
+  --input: hsl(240, 3.7%, 15.9%);
+
+  --primary: hsl(207, 90%, 54%);
+  --primary-foreground: hsl(211, 100%, 99%);
+
+  --accent: hsl(142, 76%, 36%);
+  --danger: hsl(0, 84%, 60%);
+
+  --radius: 0.75rem;
 }
 
-/* ===============================
-   BASE RESET + NO HORIZONTAL SCROLL
-================================ */
+.dark {
+  --background: hsl(222, 84%, 5%);
+  --foreground: hsl(210, 40%, 98%);
+  --muted: hsl(240, 3.7%, 15.9%);
+  --muted-foreground: hsl(215, 20%, 65%);
+  --card: hsl(215, 28%, 17%);
+  --card-foreground: hsl(210, 40%, 98%);
+  --border: hsl(240, 3.7%, 15.9%);
+  --input: hsl(240, 3.7%, 15.9%);
+  --primary: hsl(207, 90%, 54%);
+  --primary-foreground: hsl(211, 100%, 99%);
+  --accent: hsl(142, 76%, 36%);
+  --danger: hsl(0, 84%, 60%);
+  --radius: 0.75rem;
+}
+
+/* ---------- Base resets ---------- */
 @layer base {
   * {
-    box-sizing: border-box;
+    @apply border-border;
   }
 
-  html,
-  body {
-    width: 100%;
+  html {
+    @apply dark;
     height: 100%;
-    max-width: 100%;
-    overflow-x: hidden; /* ✅ verhindert links/rechts wischen */
-    background: var(--bg-dark);
-    color: var(--text-primary);
-    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-      Roboto, sans-serif;
+    width: 100%;
+    -webkit-text-size-adjust: 100%;
+    -ms-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    overflow-x: hidden; /* ✅ kein seitliches Ziehen */
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   #root {
+    height: 100%;
     width: 100%;
-    max-width: 100%;
-    overflow-x: hidden;
+    overflow-x: hidden; /* ✅ doppelte Sicherheit */
   }
 
-  body {
-    -webkit-overflow-scrolling: touch;
+  /* ✅ verhindert iOS Zoom bei Inputs */
+  input, textarea, select {
+    font-size: 16px;
   }
 
-  /* Inputs: iOS zoom verhindern */
-  input,
-  textarea {
-    font-size: 16px !important;
+  /* Placeholder */
+  input::placeholder,
+  textarea::placeholder {
+    color: hsl(215, 20%, 65%);
   }
 }
 
-/* ===============================
-   SAFE AREA (iPhone Notch + Safari UI)
-================================ */
-.chat-safe {
-  padding-left: max(12px, env(safe-area-inset-left));
-  padding-right: max(12px, env(safe-area-inset-right));
+/* ---------- Scrollbar optional ---------- */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: hsl(215, 20%, 45%);
+  border-radius: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: hsl(215, 20%, 55%);
 }
 
-/* ===============================
-   CHAT LAYOUT
-================================ */
+/* =========================================================
+   CHAT LAYOUT (WhatsApp-like)
+   ========================================================= */
+
+/* Container: Header oben, Messages scrollen, Input unten */
 .chat-container {
   display: flex;
   flex-direction: column;
+  height: 100dvh;           /* ✅ Mobile Browser korrekt */
+  height: 100vh;            /* fallback */
   width: 100%;
-  max-width: 100%;
-  height: 100%;
-  overflow-x: hidden;
+  overflow: hidden;         /* ✅ verhindert seitliches scrollen */
 }
 
+/* Header fix */
 .chat-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--bg-dark);
-  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 
-/* Nachrichtenliste */
+/* Messages scroll area */
 .chat-messages {
-  flex: 1;
-  width: 100%;
-  max-width: 100%;
+  flex: 1 1 auto;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding-top: 12px;
-  padding-bottom: 100px; /* ✅ Platz für Input */
+  overflow-x: hidden;       /* ✅ keine X-scroll */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: 0.25rem;
 }
 
-/* Jede Message-Zeile */
-.message-row {
-  width: 100%;
-  display: flex;
-  margin-bottom: 8px;
-}
-
-/* ===============================
-   MESSAGE BUBBLES (WICHTIG gegen Breite)
-================================ */
-.message-bubble {
-  max-width: 85%;
-  padding: 10px 14px;
-  border-radius: 18px;
-
-  /* ✅ harte Umbrüche: Base64 / lange Wörter */
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  white-space: pre-wrap;
-  line-height: 1.4;
-}
-
-.message-sent {
-  margin-left: auto;
-  background: var(--primary);
-  color: #ffffff;
-  border-bottom-right-radius: 6px;
-}
-
-.message-received {
-  margin-right: auto;
-  background: #1f2937;
-  color: #ffffff;
-  border-bottom-left-radius: 6px;
-}
-
-/* ===============================
-   INPUT BAR (unten fixiert + Safe Area)
-   ✅ HIER IST DER SENDEN BUTTON FIX
-================================ */
-.chat-input-wrapper {
+/* Input area unten */
+.chat-input-area {
+  flex: 0 0 auto;
   position: sticky;
   bottom: 0;
   width: 100%;
-  max-width: 100%;
-  overflow-x: hidden;
-
-  background: var(--bg-dark);
-  border-top: 1px solid var(--border);
-
-  /* ✅ iPhone/Safari: links/rechts genug Platz */
-  padding-left: max(12px, env(safe-area-inset-left));
-  padding-right: max(12px, env(safe-area-inset-right));
-  padding-top: 12px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom); /* ✅ iPhone Safe Area */
 }
 
-/* input feld */
+/* Text im Chat: sauberes Wrapping */
+.chat-message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere; /* ✅ lange Wörter brechen sauber */
+}
+
+/* Bubble Base (falls du noch irgendwo CSS Bubbles nutzt) */
+.message-bubble {
+  max-width: 78%;
+  border-radius: 18px;
+  padding: 10px 12px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Sent / Received bubble helpers */
+.message-bubble.sent {
+  background: hsl(207, 90%, 54%);
+  color: white;
+  border-top-right-radius: 10px;
+  margin-left: auto;
+}
+.message-bubble.received {
+  background: hsl(215, 28%, 17%);
+  color: white;
+  border-top-left-radius: 10px;
+  margin-right: auto;
+}
+
+/* ---------- Inputs (clean, readable) ---------- */
 .chat-input {
   width: 100%;
-  padding: 12px 16px;
-  border-radius: 999px;
-  background: #1f2937;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   color: white;
-  border: 1px solid #374151;
-  outline: none;
+  border-radius: 18px;
 }
 
-/* send button */
-.send-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  background: var(--primary);
-  color: #ffffff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0; /* ✅ Button verschwindet nie */
+/* Buttons touch-friendly */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
 }
 
-/* icon buttons */
-.icon-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  background: transparent;
-  color: #cbd5e1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-/* ===============================
-   MOBILE ONLY
-================================ */
+/* ---------- Mobile tweaks ---------- */
 @media (max-width: 768px) {
-  button {
-    min-height: 44px;
+  .chat-container {
+    height: 100dvh;
+  }
+
+  .chat-messages {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .chat-input-area {
+    padding-left: 10px;
+    padding-right: 10px;
   }
 }
