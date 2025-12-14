@@ -1,591 +1,611 @@
-import type { Express } from "express";
-import express from "express";
-import { createServer, type Server } from "http";
-import { WebSocketServer, WebSocket } from "ws";
-import { storage } from "./storage";
-import { wsMessageSchema, loginUserSchema, type WSMessage } from "@shared/schema";
-import { z } from "zod";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
-import crypto from "crypto";
+import {
+  users,
+  messages,
+  chats,
+  blockedUsers,
+  deletedChats,
+  type User,
+  type InsertUser,
+  type Message,
+  type InsertMessage,
+  type Chat,
+  type InsertChat,
+  type BlockedUser,
+  type DeletedChat,
+} from "@shared/schema";
 
-// ============================
-// Uploads
-// ============================
-const uploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+import { db } from "./db";
+import { eq, and, or, desc, asc, sql, ne, isNull } from "drizzle-orm";
 
-const upload = multer({
-  dest: uploadDir,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
-});
+/**
+ * Wichtig:
+ * - deleteExpiredMessages() MUSS number zurückgeben (für deine Logs/Scheduler)
+ */
+export interface IStorage {
+  // User operations
+  getUser(id: number): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<User | undefined>;
+  createUser(user: InsertUser): Promise<User>;
+  updateUserOnlineStatus(id: number, isOnline: boolean): Promise<void>;
+  deleteUser(id: number): Promise<void>;
 
-interface ConnectedClient {
-  ws: WebSocket;
-  userId: number;
+  // Message operations
+  createMessage(message: InsertMessage & { expiresAt: Date }): Promise<Message>;
+  getMessagesByChat(chatId: number): Promise<Message[]>;
+  deleteExpiredMessages(): Promise<number>;
+  deleteMessage(id: number): Promise<void>;
+  markMessageAsRead(messageId: number): Promise<void>;
+  markChatAsRead(chatId: number, userId: number): Promise<void>;
+
+  // Chat operations
+  createChat(chat: InsertChat): Promise<Chat>;
+  getChatsByUserId(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>>;
+  getChatByParticipants(user1Id: number, user2Id: number): Promise<Chat | undefined>;
+  getOrCreateChatByParticipants(user1Id: number, user2Id: number): Promise<Chat>;
+  updateChatLastMessage(chatId: number, messageId: number): Promise<void>;
+  incrementUnreadCount(chatId: number, userId: number): Promise<void>;
+  resetUnreadCount(chatId: number, userId: number): Promise<void>;
+
+  // Persistent chat contacts
+  getPersistentChatContacts(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>>;
+  markChatAsActive(chatId: number): Promise<void>;
+
+  // Search operations
+  searchUsers(query: string, excludeId: number): Promise<User[]>;
+
+  // Block/unblock operations
+  blockUser(blockerId: number, blockedId: number): Promise<void>;
+  unblockUser(blockerId: number, blockedId: number): Promise<void>;
+  getBlockedUsers(userId: number): Promise<User[]>;
+  isUserBlocked(blockerId: number, blockedId: number): Promise<boolean>;
+
+  // Chat deletion operations (user-specific)
+  deleteChatForUser(userId: number, chatId: number): Promise<void>;
+  isChatDeletedForUser(userId: number, chatId: number): Promise<boolean>;
+  reactivateChatForUser(userId: number, chatId: number): Promise<void>;
+  permanentlyDeleteChat(chatId: number): Promise<void>;
 }
 
-// ============================
-// Helpers
-// ============================
-function isProd() {
-  return process.env.NODE_ENV === "production";
+/* =========================================================
+   DATABASE STORAGE (Postgres/Drizzle)
+========================================================= */
+export class DatabaseStorage implements IStorage {
+  async getUser(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user || undefined;
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user || undefined;
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const [user] = await db.insert(users).values(insertUser).returning();
+    return user;
+  }
+
+  async updateUserOnlineStatus(id: number, isOnline: boolean): Promise<void> {
+    await db.update(users).set({ isOnline, lastSeen: new Date() }).where(eq(users.id, id));
+  }
+
+  async deleteUser(_id: number): Promise<void> {
+    // Wickr-style: nicht löschen
+    console.log(`🚫 User deletion blocked`);
+  }
+
+  async createMessage(message: InsertMessage & { expiresAt: Date }): Promise<Message> {
+    const [newMessage] = await db.insert(messages).values(message as any).returning();
+    return newMessage;
+  }
+
+  async getMessagesByChat(chatId: number): Promise<Message[]> {
+    return await db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, chatId))
+      .orderBy(asc(messages.createdAt));
+  }
+
+  async deleteExpiredMessages(): Promise<number> {
+    const now = new Date();
+    const result: any = await db.delete(messages).where(sql`${messages.expiresAt} < ${now}`);
+    return (result?.rowCount ?? result?.changes ?? 0) as number;
+  }
+
+  async deleteMessage(id: number): Promise<void> {
+    await db.delete(messages).where(eq(messages.id, id));
+  }
+
+  async markMessageAsRead(messageId: number): Promise<void> {
+    await db.update(messages).set({ isRead: true }).where(eq(messages.id, messageId));
+  }
+
+  async markChatAsRead(chatId: number, userId: number): Promise<void> {
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId));
+    if (!chat) return;
+
+    if (chat.participant1Id === userId) {
+      await db.update(chats).set({ unreadCount1: 0 }).where(eq(chats.id, chatId));
+    } else if (chat.participant2Id === userId) {
+      await db.update(chats).set({ unreadCount2: 0 }).where(eq(chats.id, chatId));
+    }
+  }
+
+  async createChat(chat: InsertChat): Promise<Chat> {
+    const [newChat] = await db.insert(chats).values(chat as any).returning();
+    return newChat;
+  }
+
+  /**
+   * ✅ Filtert Chats raus, die für diesen User gelöscht wurden (deletedChats)
+   */
+  async getChatsByUserId(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>> {
+    const rows = await db
+      .select({
+        chat: chats,
+        otherUser: users,
+        lastMessage: messages,
+        deleted: deletedChats,
+      })
+      .from(chats)
+      .leftJoin(
+        users,
+        or(
+          and(eq(chats.participant1Id, userId), eq(users.id, chats.participant2Id)),
+          and(eq(chats.participant2Id, userId), eq(users.id, chats.participant1Id))
+        )
+      )
+      .leftJoin(messages, eq(messages.id, chats.lastMessageId))
+      .leftJoin(
+        deletedChats,
+        and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chats.id))
+      )
+      .where(
+        and(
+          or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)),
+          isNull(deletedChats.id)
+        )
+      )
+      .orderBy(desc(chats.lastMessageTimestamp), desc(chats.createdAt));
+
+    return rows.map((row) => {
+      const unreadCount =
+        row.chat.participant1Id === userId ? row.chat.unreadCount1 : row.chat.unreadCount2;
+
+      return {
+        ...row.chat,
+        otherUser: row.otherUser!,
+        lastMessage: row.lastMessage || undefined,
+        unreadCount,
+      };
+    });
+  }
+
+  async getChatByParticipants(user1Id: number, user2Id: number): Promise<Chat | undefined> {
+    const [chat] = await db
+      .select()
+      .from(chats)
+      .where(
+        or(
+          and(eq(chats.participant1Id, user1Id), eq(chats.participant2Id, user2Id)),
+          and(eq(chats.participant1Id, user2Id), eq(chats.participant2Id, user1Id))
+        )
+      );
+    return chat || undefined;
+  }
+
+  async getOrCreateChatByParticipants(user1Id: number, user2Id: number): Promise<Chat> {
+    let chat = await this.getChatByParticipants(user1Id, user2Id);
+    if (!chat) {
+      chat = await this.createChat({
+        participant1Id: user1Id,
+        participant2Id: user2Id,
+        unreadCount1: 0,
+        unreadCount2: 0,
+        lastMessageTimestamp: new Date(),
+      } as any);
+    }
+    return chat;
+  }
+
+  async updateChatLastMessage(chatId: number, messageId: number): Promise<void> {
+    await db
+      .update(chats)
+      .set({ lastMessageId: messageId, lastMessageTimestamp: new Date() })
+      .where(eq(chats.id, chatId));
+  }
+
+  async incrementUnreadCount(chatId: number, userId: number): Promise<void> {
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId));
+    if (!chat) return;
+
+    if (chat.participant1Id === userId) {
+      await db
+        .update(chats)
+        .set({ unreadCount1: sql`${chats.unreadCount1} + 1` })
+        .where(eq(chats.id, chatId));
+    } else if (chat.participant2Id === userId) {
+      await db
+        .update(chats)
+        .set({ unreadCount2: sql`${chats.unreadCount2} + 1` })
+        .where(eq(chats.id, chatId));
+    }
+  }
+
+  async resetUnreadCount(chatId: number, userId: number): Promise<void> {
+    await this.markChatAsRead(chatId, userId);
+  }
+
+  async getPersistentChatContacts(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>> {
+    return this.getChatsByUserId(userId);
+  }
+
+  async markChatAsActive(chatId: number): Promise<void> {
+    await db.update(chats).set({ lastMessageTimestamp: new Date() }).where(eq(chats.id, chatId));
+  }
+
+  async searchUsers(query: string, excludeId: number): Promise<User[]> {
+    const validExcludeId = Number.isFinite(excludeId) ? excludeId : 0;
+    return await db
+      .select()
+      .from(users)
+      .where(
+        and(
+          sql`${users.username} ILIKE ${"%" + query + "%"}`,
+          ne(users.id, validExcludeId)
+        )
+      )
+      .limit(10);
+  }
+
+  async blockUser(blockerId: number, blockedId: number): Promise<void> {
+    await db.insert(blockedUsers).values({ blockerId, blockedId } as any).onConflictDoNothing();
+  }
+
+  async unblockUser(blockerId: number, blockedId: number): Promise<void> {
+    await db
+      .delete(blockedUsers)
+      .where(and(eq(blockedUsers.blockerId, blockerId), eq(blockedUsers.blockedId, blockedId)));
+  }
+
+  async getBlockedUsers(userId: number): Promise<User[]> {
+    const blocked = await db
+      .select({ user: users })
+      .from(blockedUsers)
+      .innerJoin(users, eq(users.id, blockedUsers.blockedId))
+      .where(eq(blockedUsers.blockerId, userId));
+    return blocked.map((row) => row.user);
+  }
+
+  async isUserBlocked(blockerId: number, blockedId: number): Promise<boolean> {
+    const [blocked] = await db
+      .select()
+      .from(blockedUsers)
+      .where(and(eq(blockedUsers.blockerId, blockerId), eq(blockedUsers.blockedId, blockedId)));
+    return !!blocked;
+  }
+
+  async deleteChatForUser(userId: number, chatId: number): Promise<void> {
+    await db.insert(deletedChats).values({ userId, chatId } as any).onConflictDoNothing();
+  }
+
+  async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
+    const [deleted] = await db
+      .select()
+      .from(deletedChats)
+      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+    return !!deleted;
+  }
+
+  async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
+    await db
+      .delete(deletedChats)
+      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+  }
+
+  async permanentlyDeleteChat(chatId: number): Promise<void> {
+    await db.delete(messages).where(eq(messages.chatId, chatId));
+    await db.delete(deletedChats).where(eq(deletedChats.chatId, chatId));
+    await db.delete(chats).where(eq(chats.id, chatId));
+  }
 }
 
-function toInt(v: any, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
+/* =========================================================
+   MEMORY STORAGE (optional fallback)
+========================================================= */
+export class MemStorage implements IStorage {
+  public usersMap = new Map<number, User>();
+  public messagesMap = new Map<number, Message>();
+  public chatsMap = new Map<number, Chat>();
+  public blockedMap = new Map<number, BlockedUser>();
+  public deletedMap = new Map<number, DeletedChat>();
 
-function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password).digest("hex");
-}
+  public userIdCounter = 1;
+  public messageIdCounter = 1;
+  public chatIdCounter = 1;
+  public blockedIdCounter = 1;
+  public deletedIdCounter = 1;
 
-function verifyPassword(password: string, hash: string): boolean {
-  return crypto.createHash("sha256").update(password).digest("hex") === hash;
-}
+  async getUser(id: number): Promise<User | undefined> {
+    return this.usersMap.get(id);
+  }
 
-function safeJson(res: any, status: number, payload: any) {
-  return res.status(status).json(payload);
-}
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    return Array.from(this.usersMap.values()).find((u) => u.username === username);
+  }
 
-function errMessage(err: any) {
-  if (!err) return "Unknown error";
-  if (typeof err === "string") return err;
-  if (typeof err?.message === "string") return err.message;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const exists = await this.getUserByUsername(insertUser.username);
+    if (exists) throw new Error("Username already taken");
+
+    const id = this.userIdCounter++;
+    const user: User = {
+      id,
+      username: insertUser.username,
+      passwordHash: insertUser.passwordHash,
+      publicKey: insertUser.publicKey,
+      isOnline: true as any,
+      lastSeen: new Date() as any,
+    } as any;
+
+    this.usersMap.set(id, user);
+    return user;
+  }
+
+  async updateUserOnlineStatus(id: number, isOnline: boolean): Promise<void> {
+    const u = this.usersMap.get(id);
+    if (!u) return;
+    (u as any).isOnline = isOnline;
+    (u as any).lastSeen = new Date();
+    this.usersMap.set(id, u);
+  }
+
+  async deleteUser(): Promise<void> {
+    console.log("🚫 User deletion blocked");
+  }
+
+  async createMessage(message: InsertMessage & { expiresAt: Date }): Promise<Message> {
+    const id = this.messageIdCounter++;
+    const m: Message = {
+      id,
+      chatId: message.chatId,
+      senderId: message.senderId,
+      receiverId: message.receiverId,
+      content: message.content,
+      messageType: (message as any).messageType || "text",
+      fileName: (message as any).fileName ?? null,
+      fileSize: (message as any).fileSize ?? null,
+      destructTimer: (message as any).destructTimer ?? 86400,
+      isRead: false as any,
+      createdAt: new Date() as any,
+      expiresAt: message.expiresAt as any,
+    } as any;
+
+    this.messagesMap.set(id, m);
+    await this.updateChatLastMessage(message.chatId, id);
+    await this.incrementUnreadCount(message.chatId, message.receiverId);
+    return m;
+  }
+
+  async getMessagesByChat(chatId: number): Promise<Message[]> {
+    const now = Date.now();
+    return Array.from(this.messagesMap.values())
+      .filter((m) => m.chatId === chatId)
+      .filter((m) => new Date(m.expiresAt as any).getTime() > now)
+      .sort((a, b) => new Date(a.createdAt as any).getTime() - new Date(b.createdAt as any).getTime());
+  }
+
+  async deleteExpiredMessages(): Promise<number> {
+    const now = Date.now();
+    const expired = Array.from(this.messagesMap.values())
+      .filter((m) => new Date(m.expiresAt as any).getTime() <= now)
+      .map((m) => m.id);
+    expired.forEach((id) => this.messagesMap.delete(id));
+    return expired.length;
+  }
+
+  async deleteMessage(id: number): Promise<void> {
+    this.messagesMap.delete(id);
+  }
+
+  async markMessageAsRead(messageId: number): Promise<void> {
+    const m = this.messagesMap.get(messageId);
+    if (!m) return;
+    (m as any).isRead = true;
+    this.messagesMap.set(messageId, m);
+  }
+
+  async markChatAsRead(chatId: number, userId: number): Promise<void> {
+    const c = this.chatsMap.get(chatId);
+    if (!c) return;
+
+    if (c.participant1Id === userId) (c as any).unreadCount1 = 0;
+    if (c.participant2Id === userId) (c as any).unreadCount2 = 0;
+
+    this.chatsMap.set(chatId, c);
+  }
+
+  async createChat(chat: InsertChat): Promise<Chat> {
+    const id = this.chatIdCounter++;
+    const c: Chat = {
+      id,
+      participant1Id: chat.participant1Id,
+      participant2Id: chat.participant2Id,
+      unreadCount1: (chat as any).unreadCount1 ?? 0,
+      unreadCount2: (chat as any).unreadCount2 ?? 0,
+      lastMessageId: null as any,
+      lastMessageTimestamp: new Date() as any,
+      createdAt: new Date() as any,
+    } as any;
+
+    this.chatsMap.set(id, c);
+    return c;
+  }
+
+  async getChatsByUserId(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>> {
+    const deletedChatIds = new Set(
+      Array.from(this.deletedMap.values()).filter((d) => d.userId === userId).map((d) => d.chatId)
+    );
+
+    const userChats = Array.from(this.chatsMap.values()).filter(
+      (c) => (c.participant1Id === userId || c.participant2Id === userId) && !deletedChatIds.has(c.id)
+    );
+
+    const out: Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }> = [];
+
+    for (const c of userChats) {
+      const otherId = c.participant1Id === userId ? c.participant2Id : c.participant1Id;
+      const otherUser = this.usersMap.get(otherId);
+      if (!otherUser) continue;
+
+      const lastMessage = c.lastMessageId ? this.messagesMap.get(c.lastMessageId as any) : undefined;
+      const unreadCount = c.participant1Id === userId ? (c as any).unreadCount1 : (c as any).unreadCount2;
+
+      out.push({ ...(c as any), otherUser, lastMessage, unreadCount });
+    }
+
+    return out.sort((a, b) => {
+      const at = a.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt as any).getTime() : new Date(a.lastMessageTimestamp as any).getTime();
+      const bt = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt as any).getTime() : new Date(b.lastMessageTimestamp as any).getTime();
+      return bt - at;
+    });
+  }
+
+  async getChatByParticipants(user1Id: number, user2Id: number): Promise<Chat | undefined> {
+    return Array.from(this.chatsMap.values()).find(
+      (c) =>
+        (c.participant1Id === user1Id && c.participant2Id === user2Id) ||
+        (c.participant1Id === user2Id && c.participant2Id === user1Id)
+    );
+  }
+
+  async getOrCreateChatByParticipants(user1Id: number, user2Id: number): Promise<Chat> {
+    let c = await this.getChatByParticipants(user1Id, user2Id);
+    if (!c) {
+      c = await this.createChat({
+        participant1Id: user1Id,
+        participant2Id: user2Id,
+        unreadCount1: 0,
+        unreadCount2: 0,
+        lastMessageTimestamp: new Date(),
+      } as any);
+    }
+    return c;
+  }
+
+  async updateChatLastMessage(chatId: number, messageId: number): Promise<void> {
+    const c = this.chatsMap.get(chatId);
+    if (!c) return;
+    (c as any).lastMessageId = messageId;
+    (c as any).lastMessageTimestamp = new Date();
+    this.chatsMap.set(chatId, c);
+  }
+
+  async incrementUnreadCount(chatId: number, userId: number): Promise<void> {
+    const c = this.chatsMap.get(chatId);
+    if (!c) return;
+
+    if (c.participant1Id === userId) (c as any).unreadCount1 = ((c as any).unreadCount1 ?? 0) + 1;
+    if (c.participant2Id === userId) (c as any).unreadCount2 = ((c as any).unreadCount2 ?? 0) + 1;
+
+    this.chatsMap.set(chatId, c);
+  }
+
+  async resetUnreadCount(chatId: number, userId: number): Promise<void> {
+    await this.markChatAsRead(chatId, userId);
+  }
+
+  async getPersistentChatContacts(
+    userId: number
+  ): Promise<Array<Chat & { otherUser: User; lastMessage?: Message; unreadCount: number }>> {
+    return this.getChatsByUserId(userId);
+  }
+
+  async markChatAsActive(chatId: number): Promise<void> {
+    const c = this.chatsMap.get(chatId);
+    if (!c) return;
+    (c as any).lastMessageTimestamp = new Date();
+    this.chatsMap.set(chatId, c);
+  }
+
+  async searchUsers(query: string, excludeId: number): Promise<User[]> {
+    const q = query.toLowerCase();
+    return Array.from(this.usersMap.values())
+      .filter((u) => u.id !== excludeId && u.username.toLowerCase().includes(q))
+      .slice(0, 10);
+  }
+
+  async blockUser(blockerId: number, blockedId: number): Promise<void> {
+    const exists = Array.from(this.blockedMap.values()).some(
+      (b) => b.blockerId === blockerId && b.blockedId === blockedId
+    );
+    if (exists) return;
+
+    const id = this.blockedIdCounter++;
+    this.blockedMap.set(id, { id, blockerId, blockedId, createdAt: new Date() as any } as any);
+  }
+
+  async unblockUser(blockerId: number, blockedId: number): Promise<void> {
+    const found = Array.from(this.blockedMap.entries()).find(
+      ([, b]) => b.blockerId === blockerId && b.blockedId === blockedId
+    );
+    if (found) this.blockedMap.delete(found[0]);
+  }
+
+  async getBlockedUsers(userId: number): Promise<User[]> {
+    const ids = Array.from(this.blockedMap.values()).filter((b) => b.blockerId === userId).map((b) => b.blockedId);
+    return ids.map((id) => this.usersMap.get(id)).filter(Boolean) as User[];
+  }
+
+  async isUserBlocked(blockerId: number, blockedId: number): Promise<boolean> {
+    return Array.from(this.blockedMap.values()).some((b) => b.blockerId === blockerId && b.blockedId === blockedId);
+  }
+
+  async deleteChatForUser(userId: number, chatId: number): Promise<void> {
+    const exists = Array.from(this.deletedMap.values()).some((d) => d.userId === userId && d.chatId === chatId);
+    if (exists) return;
+
+    const id = this.deletedIdCounter++;
+    this.deletedMap.set(id, { id, userId, chatId, deletedAt: new Date() as any } as any);
+  }
+
+  async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
+    return Array.from(this.deletedMap.values()).some((d) => d.userId === userId && d.chatId === chatId);
+  }
+
+  async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
+    const found = Array.from(this.deletedMap.entries()).find(([, d]) => d.userId === userId && d.chatId === chatId);
+    if (found) this.deletedMap.delete(found[0]);
+  }
+
+  async permanentlyDeleteChat(chatId: number): Promise<void> {
+    this.chatsMap.delete(chatId);
+
+    for (const [id, m] of Array.from(this.messagesMap.entries())) {
+      if (m.chatId === chatId) this.messagesMap.delete(id);
+    }
+    for (const [id, d] of Array.from(this.deletedMap.entries())) {
+      if (d.chatId === chatId) this.deletedMap.delete(id);
+    }
   }
 }
 
 /**
- * destructTimer normalisieren:
- * - wenn Client ms sendet -> Sekunden
- * - clamp min/max
+ * ✅ WICHTIG FÜR RENDER:
+ * Export muss exakt so heißen: `export const storage`
+ * (sonst kommt: "No matching export ... for import storage")
  */
-function normalizeDestructTimerSeconds(raw: any) {
-  let t = toInt(raw, 86400);
+const hasDb = !!process.env.DATABASE_URL;
 
-  // Wenn jemand ms schickt (z.B. 300000), dann umrechnen
-  if (t > 100000) t = Math.floor(t / 1000);
-
-  // Minimum 5 Sekunden
-  if (t < 5) t = 5;
-
-  // Maximum 7 Tage
-  const max = 7 * 24 * 60 * 60;
-  if (t > max) t = max;
-
-  return t;
-}
-
-export async function registerRoutes(app: Express): Promise<Server> {
-  const httpServer = createServer(app);
-  const connectedClients = new Map<number, ConnectedClient>();
-
-  function broadcast(message: any, excludeUserId?: number) {
-    for (const client of connectedClients.values()) {
-      if (excludeUserId && client.userId === excludeUserId) continue;
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(JSON.stringify(message));
-      }
-    }
-  }
-
-  // ============================
-  // REST API
-  // ============================
-
-  // ✅ Health (damit du immer testen kannst)
-  app.get("/api/health", (_req, res) => {
-    return res.json({ ok: true, service: "whisper3", time: new Date().toISOString() });
-  });
-
-  // Register
-  app.post("/api/register", async (req, res) => {
-    try {
-      const username = String(req.body?.username || "").trim();
-      const password = String(req.body?.password || "");
-      const publicKey = String(req.body?.publicKey || "");
-
-      if (username.length < 3) {
-        return safeJson(res, 400, { ok: false, message: "Username too short (min 3)" });
-      }
-      if (password.length < 6) {
-        return safeJson(res, 400, { ok: false, message: "Password too short (min 6)" });
-      }
-      if (!publicKey) {
-        return safeJson(res, 400, { ok: false, message: "publicKey is required" });
-      }
-
-      const existing = await storage.getUserByUsername(username);
-      if (existing) {
-        return safeJson(res, 409, { ok: false, message: "Username already exists" });
-      }
-
-      // ✅ DB-SAFE: NUR Felder die InsertUser kennt
-      const user = await storage.createUser({
-        username,
-        passwordHash: hashPassword(password),
-        publicKey,
-      } as any);
-
-      await storage.updateUserOnlineStatus(user.id, true);
-
-      return res.json({
-        ok: true,
-        user: { id: user.id, username: user.username, publicKey: user.publicKey },
-      });
-    } catch (err: any) {
-      console.error("❌ Registration error:", err);
-
-      // In DEV zeigen wir mehr, PROD kürzer
-      return safeJson(res, 500, {
-        ok: false,
-        message: isProd() ? "Registration failed" : `Registration failed: ${errMessage(err)}`,
-      });
-    }
-  });
-
-  // Login
-  app.post("/api/login", async (req, res) => {
-    try {
-      const parsed = loginUserSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return safeJson(res, 400, { ok: false, message: "Invalid input", errors: parsed.error.errors });
-      }
-
-      const username = String(parsed.data.username || "").trim();
-      const password = String(parsed.data.password || "");
-
-      const user = await storage.getUserByUsername(username);
-      if (!user) {
-        return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
-      }
-
-      // ✅ passt zu MemStorage + DatabaseStorage Schema
-      const storedHash = (user as any).passwordHash;
-      if (!storedHash) {
-        console.error("❌ User has no passwordHash field:", user);
-        return safeJson(res, 500, { ok: false, message: "User passwordHash missing in storage" });
-      }
-
-      if (!verifyPassword(password, storedHash)) {
-        return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
-      }
-
-      await storage.updateUserOnlineStatus(user.id, true);
-
-      return res.json({
-        ok: true,
-        user: { id: user.id, username: user.username, publicKey: user.publicKey },
-      });
-    } catch (err: any) {
-      console.error("❌ Login error:", err);
-      return safeJson(res, 500, {
-        ok: false,
-        message: isProd() ? "Login failed" : `Login failed: ${errMessage(err)}`,
-      });
-    }
-  });
-
-  // Search users
-  app.get("/api/search-users", async (req, res) => {
-    try {
-      const q = String(req.query?.q || "").trim();
-      const excludeId = toInt(req.query?.exclude ?? req.query?.excludeId, 0);
-
-      if (!q) return res.json([]);
-
-      const users = await storage.searchUsers(q, excludeId);
-      return res.json(users);
-    } catch (err) {
-      console.error("Search users error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to search users" });
-    }
-  });
-
-  // Create/get chat between 2 users
-  app.post("/api/chats", async (req, res) => {
-    try {
-      const participant1Id = toInt(req.body?.participant1Id, 0);
-      const participant2Id = toInt(req.body?.participant2Id, 0);
-      if (!participant1Id || !participant2Id) {
-        return safeJson(res, 400, { ok: false, message: "participant1Id and participant2Id are required" });
-      }
-
-      const chat = await storage.getOrCreateChatByParticipants(participant1Id, participant2Id);
-      return res.json({ ok: true, chat });
-    } catch (err) {
-      console.error("Create chat error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to create chat" });
-    }
-  });
-
-  // Get chats
-  app.get("/api/chats/:userId", async (req, res) => {
-    try {
-      const userId = toInt(req.params.userId, 0);
-      if (!userId) return safeJson(res, 400, { ok: false, message: "Invalid userId" });
-
-      const chats = await storage.getChatsByUserId(userId);
-      return res.json(chats);
-    } catch (err) {
-      console.error("Get chats error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to fetch chats" });
-    }
-  });
-
-  // Get messages for chat
-  app.get("/api/chats/:chatId/messages", async (req, res) => {
-    try {
-      const chatId = toInt(req.params.chatId, 0);
-      if (!chatId) return safeJson(res, 400, { ok: false, message: "Invalid chatId" });
-
-      const msgs = await storage.getMessagesByChat(chatId);
-      return res.json(msgs);
-    } catch (err) {
-      console.error("Get messages error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to fetch messages" });
-    }
-  });
-
-  // Mark chat read
-  app.post("/api/chats/:chatId/mark-read", async (req, res) => {
-    try {
-      const chatId = toInt(req.params.chatId, 0);
-      const userId = toInt(req.body?.userId, 0);
-      if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
-
-      await storage.resetUnreadCount(chatId, userId);
-      return res.json({ ok: true, success: true });
-    } catch (err) {
-      console.error("Mark read error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to mark chat as read" });
-    }
-  });
-
-  // Delete chat for user
-  app.post("/api/chats/:chatId/delete", async (req, res) => {
-    try {
-      const chatId = toInt(req.params.chatId, 0);
-      const userId = toInt(req.body?.userId, 0);
-      if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
-
-      await storage.deleteChatForUser(userId, chatId);
-      return res.json({ ok: true, success: true });
-    } catch (err) {
-      console.error("Delete chat error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to delete chat" });
-    }
-  });
-
-  // Block user
-  app.post("/api/users/:userId/block", async (req, res) => {
-    try {
-      const blockedUserId = toInt(req.params.userId, 0);
-      const blockerId = toInt(req.body?.blockerId, 0);
-      if (!blockedUserId || !blockerId) {
-        return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
-      }
-
-      await storage.blockUser(blockerId, blockedUserId);
-      return res.json({ ok: true, success: true });
-    } catch (err) {
-      console.error("Block user error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to block user" });
-    }
-  });
-
-  // Upload
-  app.post("/api/upload", upload.single("file"), async (req, res) => {
-    try {
-      if (!req.file) return safeJson(res, 400, { ok: false, message: "No file uploaded" });
-
-      return res.json({
-        ok: true,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimetype: req.file.mimetype,
-        url: `/uploads/${req.file.filename}`,
-      });
-    } catch (err) {
-      console.error("Upload error:", err);
-      return safeJson(res, 500, { ok: false, message: "Failed to upload file" });
-    }
-  });
-
-  app.use("/uploads", express.static(uploadDir));
-
-  // ============================
-  // WebSocket
-  // ============================
-  const ipConnCount = new Map<string, number>();
-  const MAX_CONNS_PER_IP = 10;
-
-  const wss = new WebSocketServer({
-    server: httpServer,
-    path: "/ws",
-    maxPayload: 32 * 1024,
-    perMessageDeflate: false,
-  });
-
-  // Heartbeat
-  setInterval(() => {
-    wss.clients.forEach((client: any) => {
-      if (client.isAlive === false) return client.terminate();
-      client.isAlive = false;
-      client.ping();
-    });
-  }, 30000);
-
-  // Cleanup expired messages
-  setInterval(async () => {
-    try {
-      const deletedCount = await storage.deleteExpiredMessages();
-      if (deletedCount > 0) console.log(`🧹 Cleaned up ${deletedCount} expired messages`);
-    } catch (err) {
-      console.error("❌ Error during message cleanup:", err);
-    }
-  }, 300000);
-
-  wss.on("connection", (ws: any, req: any) => {
-    // Origin allowlist
-    const origin = req.headers.origin;
-    const allowedOrigins = new Set([
-      "https://whisper3.onrender.com",
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-    ]);
-    if (origin && !allowedOrigins.has(origin)) {
-      ws.close(1008, "Origin not allowed");
-      return;
-    }
-
-    // IP detect
-    const xff = req.headers["x-forwarded-for"];
-    const ip =
-      typeof xff === "string" && xff.length > 0
-        ? xff.split(",")[0].trim()
-        : req.socket?.remoteAddress || "unknown";
-
-    // IP conn limit
-    const curr = ipConnCount.get(ip) ?? 0;
-    if (curr >= MAX_CONNS_PER_IP) {
-      ws.close(1013, "Too many connections");
-      return;
-    }
-    ipConnCount.set(ip, curr + 1);
-
-    ws.on("close", () => {
-      const now = (ipConnCount.get(ip) ?? 1) - 1;
-      if (now <= 0) ipConnCount.delete(ip);
-      else ipConnCount.set(ip, now);
-    });
-
-    // heartbeat flag
-    ws.isAlive = true;
-    ws.on("pong", () => (ws.isAlive = true));
-
-    // rate limit: 25 msgs / 10s
-    let tokens = 25;
-    let last = Date.now();
-    function takeToken() {
-      const now = Date.now();
-      const delta = (now - last) / 1000;
-      last = now;
-      tokens = Math.min(25, tokens + delta * 2.5);
-      if (tokens >= 1) {
-        tokens -= 1;
-        return true;
-      }
-      return false;
-    }
-
-    let joinedUserId: number | null = null;
-
-    ws.send(JSON.stringify({ type: "connection_established", ok: true }));
-
-    ws.on("message", async (data: any) => {
-      try {
-        if (!takeToken()) {
-          ws.close(1013, "Rate limited");
-          return;
-        }
-
-        const raw = data.toString();
-        let parsed: any;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
-          return;
-        }
-
-        // Typing
-        if (parsed?.type === "typing") {
-          const receiverId = toInt(parsed.receiverId, 0);
-          const senderId = toInt(parsed.senderId, 0);
-          const chatId = toInt(parsed.chatId, 0);
-          const isTyping = Boolean(parsed.isTyping);
-
-          if (!joinedUserId) return;
-          if (senderId !== joinedUserId) return; // anti-spoof
-
-          const receiverClient = connectedClients.get(receiverId);
-          if (receiverClient?.ws?.readyState === WebSocket.OPEN) {
-            receiverClient.ws.send(JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping }));
-          }
-          return;
-        }
-
-        // Normal WS messages
-        let validatedMessage: WSMessage;
-
-        if (parsed.type === "message") {
-          const msgData = parsed.message || parsed;
-          validatedMessage = {
-            // @ts-ignore
-            type: "message",
-            chatId: msgData.chatId || null,
-            senderId: msgData.senderId,
-            receiverId: msgData.receiverId,
-            content: msgData.content,
-            messageType: msgData.messageType || "text",
-            fileName: msgData.fileName,
-            fileSize: msgData.fileSize,
-            destructTimer: msgData.destructTimer || 86400,
-          } as any;
-        } else {
-          const safe = wsMessageSchema.safeParse(parsed);
-          if (!safe.success) {
-            ws.send(JSON.stringify({ type: "error", message: "Invalid WS message", errors: safe.error.errors }));
-            return;
-          }
-          validatedMessage = safe.data;
-        }
-
-        switch (validatedMessage.type) {
-          case "join": {
-            joinedUserId = (validatedMessage as any).userId;
-            if (!joinedUserId) {
-              ws.send(JSON.stringify({ type: "error", message: "Missing userId" }));
-              return;
-            }
-
-            connectedClients.set(joinedUserId, { ws, userId: joinedUserId });
-            await storage.updateUserOnlineStatus(joinedUserId, true);
-
-            ws.send(JSON.stringify({ type: "join_confirmed", ok: true, userId: joinedUserId }));
-            broadcast({ type: "user_status", userId: joinedUserId, isOnline: true }, joinedUserId);
-            break;
-          }
-
-          case "message": {
-            if (!joinedUserId) {
-              ws.send(JSON.stringify({ type: "error", message: "User not joined - send join first" }));
-              return;
-            }
-
-            const senderId = toInt((validatedMessage as any).senderId, 0);
-            const receiverId = toInt((validatedMessage as any).receiverId, 0);
-
-            if (!senderId || senderId !== joinedUserId) {
-              ws.send(JSON.stringify({ type: "error", message: "Sender mismatch" }));
-              return;
-            }
-            if (!receiverId) {
-              ws.send(JSON.stringify({ type: "error", message: "Missing receiverId" }));
-              return;
-            }
-
-            const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
-
-            // Re-activate chat if deleted for receiver
-            try {
-              const wasDeleted = await storage.isChatDeletedForUser(receiverId, chat.id);
-              if (wasDeleted) await storage.reactivateChatForUser(receiverId, chat.id);
-            } catch {}
-
-            const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
-            const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
-
-            const content = (validatedMessage as any).content;
-
-            const isEncrypted =
-              (validatedMessage as any).messageType === "text" &&
-              typeof content === "string" &&
-              content.length > 100 &&
-              /^[A-Za-z0-9+/=]+$/.test(content);
-
-            const newMessage = await storage.createMessage({
-              chatId: chat.id,
-              senderId,
-              receiverId,
-              content,
-              messageType: (validatedMessage as any).messageType,
-              fileName: (validatedMessage as any).fileName,
-              fileSize: (validatedMessage as any).fileSize,
-              isEncrypted,
-              expiresAt,
-            } as any);
-
-            // unread receiver (DB needs this here; MemStorage already increments internally too,
-            // aber bei MemStorage ist es ok wenn doppelt? -> nein. MemStorage incrementiert bereits in createMessage.
-            // Wir prüfen Storage-Klasse:
-            const storageName = (storage as any)?.constructor?.name?.toLowerCase?.() || "";
-            const isMem = storageName.includes("mem");
-            if (!isMem) {
-              await storage.incrementUnreadCount(chat.id, receiverId);
-            }
-
-            await storage.updateChatLastMessage(chat.id, (newMessage as any).id);
-
-            // ack sender
-            ws.send(JSON.stringify({ type: "message_sent", ok: true, messageId: (newMessage as any).id, chatId: chat.id }));
-
-            // realtime push
-            const payload = { type: "new_message", message: newMessage };
-
-            const senderClient = connectedClients.get(senderId);
-            if (senderClient?.ws?.readyState === WebSocket.OPEN) senderClient.ws.send(JSON.stringify(payload));
-
-            const receiverClient = connectedClients.get(receiverId);
-            if (receiverClient?.ws?.readyState === WebSocket.OPEN) receiverClient.ws.send(JSON.stringify(payload));
-
-            break;
-          }
-
-          case "read_receipt":
-            // optional später
-            break;
-        }
-      } catch (err) {
-        console.error("WebSocket message error:", err);
-        try {
-          ws.send(JSON.stringify({ type: "error", message: "WebSocket processing error" }));
-        } catch {}
-      }
-    });
-
-    ws.on("close", async () => {
-      if (joinedUserId) {
-        connectedClients.delete(joinedUserId);
-        try {
-          await storage.updateUserOnlineStatus(joinedUserId, false);
-        } catch {}
-        broadcast({ type: "user_status", userId: joinedUserId, isOnline: false }, joinedUserId);
-      }
-    });
-
-    ws.on("error", (err: any) => {
-      console.error("❌ WEBSOCKET ERROR:", err);
-    });
-  });
-
-  return httpServer;
-}
+export const storage: IStorage = hasDb ? new DatabaseStorage() : new MemStorage();
