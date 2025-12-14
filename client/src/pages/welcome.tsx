@@ -7,39 +7,116 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { generateKeyPair } from "@/lib/crypto";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
 import { useLanguage } from "@/lib/i18n";
 import { LanguageSelector } from "@/components/ui/language-selector";
 import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
-import { EyeOff, Shield, KeyRound, Clock, Database, LogIn, UserPlus } from "lucide-react";
+import {
+  EyeOff,
+  Shield,
+  Clock,
+  Database,
+  LogIn,
+  UserPlus,
+} from "lucide-react";
 import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
+
+type ApiErrorBody = {
+  ok?: boolean;
+  message?: string;
+  error?: string;
+  errors?: any;
+};
+
+type ApiUser = { id: number; username: string; publicKey: string };
+
+type ApiUserResponse =
+  | { user: ApiUser }
+  | ApiErrorBody;
+
+async function postJson<T = any>(url: string, body: any): Promise<T> {
+  // relative URL => funktioniert überall (Render, localhost, iOS Safari)
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // ignore
+  }
+
+  if (!res.ok) {
+    const msg =
+      data?.message ||
+      data?.error ||
+      `HTTP ${res.status} ${res.statusText || ""}`.trim();
+    const err = new Error(msg);
+    (err as any).status = res.status;
+    (err as any).data = data;
+    throw err;
+  }
+
+  return data as T;
+}
+
+function friendlyErrorMessage(err: any, fallback: string) {
+  const msg =
+    err?.message ||
+    err?.data?.message ||
+    err?.data?.error ||
+    fallback;
+
+  // Ein paar typische Fälle schöner machen
+  if (typeof msg === "string") {
+    if (msg.toLowerCase().includes("invalid username or password")) {
+      return "Benutzername oder Passwort ist falsch.";
+    }
+    if (msg.toLowerCase().includes("username already exists")) {
+      return "Dieser Benutzername ist bereits vergeben.";
+    }
+    if (msg.toLowerCase().includes("invalid input")) {
+      return "Bitte überprüfe deine Eingaben.";
+    }
+    if (msg.toLowerCase().includes("invalid url")) {
+      return "Server/Client URL-Fehler. Bitte Seite neu laden und erneut versuchen.";
+    }
+  }
+
+  return msg;
+}
 
 export default function WelcomePage() {
   const [, setLocation] = useLocation();
+
   const [username, setUsername] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
+
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+
   const [isLoading, setIsLoading] = useState(false);
+
   const { toast } = useToast();
   const { t } = useLanguage();
-  
-  // Initialize session persistence on mount
+
+  // Session persistence nur 1x initialisieren
   useEffect(() => {
     SessionPersistence.getInstance().initialize();
   }, []);
-  useEffect(() => {
-    SessionPersistence.getInstance().initialize();
-  }, []);
-
-
 
   const handleLogin = async () => {
-    if (!loginUsername.trim() || !loginPassword.trim()) {
+    const u = loginUsername.trim();
+    const p = loginPassword;
+
+    if (!u || !p) {
       toast({
-        title: t('usernameEmpty'),
-        description: t('usernameEmpty'),
+        title: t("error"),
+        description: t("enterCredentials") || "Bitte Benutzername & Passwort eingeben.",
         variant: "destructive",
       });
       return;
@@ -47,51 +124,49 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      // Login with username and password
-      const response = await apiRequest("POST", "/api/login", {
-        username: loginUsername,
-        password: loginPassword,
+      const data = await postJson<ApiUserResponse>("/api/login", {
+        username: u,
+        password: p,
       });
 
-      const user = await response.json();
+      if (!("user" in data) || !data.user?.id) {
+        throw new Error((data as any)?.message || t("loginFailed"));
+      }
 
-      // Check if user data exists in localStorage for private key
-      const existingData = localStorage.getItem("user");
+      // PrivateKey wiederverwenden, wenn dieser Username schon mal lokal da war
       let privateKey = "";
-      
+      const existingData = localStorage.getItem("user");
       if (existingData) {
-        const parsed = JSON.parse(existingData);
-        if (parsed.username === loginUsername) {
-          privateKey = parsed.privateKey;
-        }
+        try {
+          const parsed = JSON.parse(existingData);
+          if (parsed?.username === u && parsed?.privateKey) {
+            privateKey = parsed.privateKey;
+          }
+        } catch {}
       }
 
       if (!privateKey) {
-        // Generate new key pair if not found
-        const { privateKey: newPrivateKey } = await generateKeyPair();
-        privateKey = newPrivateKey;
+        const kp = await generateKeyPair();
+        privateKey = kp.privateKey;
       }
 
-      // Store user data with maximum protection (Wickr-Me style)
       const userProfile = {
-        ...user.user,
+        ...data.user,
         privateKey,
       };
-      
+
       profileProtection.storeProfile(userProfile);
-      console.log("✅ User logged in successfully with encryption keys:", user.user.username);
 
       toast({
-        title: t('welcomeBack'),
-        description: t('loginSuccess'),
+        title: t("welcomeBack") || "Willkommen zurück!",
+        description: t("loginSuccess") || "Login erfolgreich.",
       });
 
-      console.log("🎯 Navigating to chat page from login...");
       setLocation("/chat");
-    } catch (error: any) {
+    } catch (err: any) {
       toast({
-        title: t('error'),
-        description: error.message || t('loginFailed'),
+        title: t("error") || "Fehler",
+        description: friendlyErrorMessage(err, t("loginFailed") || "Login fehlgeschlagen."),
         variant: "destructive",
       });
     } finally {
@@ -100,37 +175,40 @@ export default function WelcomePage() {
   };
 
   const handleStartChatting = async () => {
-    if (!registerPassword.trim()) {
+    const u = username.trim();
+    const p = registerPassword;
+
+    if (!u) {
       toast({
-        title: t('passwordRequired'),
-        description: t('enterPassword'),
+        title: t("usernameRequired") || "Benutzername erforderlich",
+        description: t("enterUsername") || "Bitte Benutzername eingeben.",
         variant: "destructive",
       });
       return;
     }
 
-    if (registerPassword.length < 6) {
+    if (u.length < 3) {
       toast({
-        title: t('passwordTooShort'),
-        description: t('passwordMinLength'),
+        title: t("usernameTooShort") || "Benutzername zu kurz",
+        description: t("usernameMinLength") || "Mindestens 3 Zeichen.",
         variant: "destructive",
       });
       return;
     }
 
-    if (!username.trim()) {
+    if (!p.trim()) {
       toast({
-        title: t('usernameRequired'),
-        description: t('enterUsername'),
+        title: t("passwordRequired") || "Passwort erforderlich",
+        description: t("enterPassword") || "Bitte Passwort eingeben.",
         variant: "destructive",
       });
       return;
     }
 
-    if (username.length < 3) {
+    if (p.length < 6) {
       toast({
-        title: t('usernameTooShort'),
-        description: t('usernameMinLength'),
+        title: t("passwordTooShort") || "Passwort zu kurz",
+        description: t("passwordMinLength") || "Mindestens 6 Zeichen.",
         variant: "destructive",
       });
       return;
@@ -138,40 +216,35 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const finalUsername = username.trim();
       const { publicKey, privateKey } = await generateKeyPair();
 
-      // Create user account
-      console.log("👤 Creating user account:", finalUsername);
-      const response = await apiRequest("POST", "/api/register", {
-        username: finalUsername,
-        password: registerPassword,
+      const data = await postJson<ApiUserResponse>("/api/register", {
+        username: u,
+        password: p,
         publicKey,
       });
 
-      const user = await response.json();
-      console.log("✅ User created successfully:", user.id, username);
+      if (!("user" in data) || !data.user?.id) {
+        throw new Error((data as any)?.message || t("accountCreationFailed"));
+      }
 
-      // Store user data with maximum protection (Wickr-Me style)
       const userProfile = {
-        ...user.user,
+        ...data.user,
         privateKey,
       };
-      
+
       profileProtection.storeProfile(userProfile);
-      console.log("✅ User registered successfully with encryption keys:", user.user.username);
 
       toast({
-        title: t('welcomeToWhispergram'),
-        description: t('accountCreated'),
+        title: t("welcomeToWhispergram") || "Willkommen!",
+        description: t("accountCreated") || "Konto erstellt.",
       });
 
-      console.log("🎯 Navigating to chat page from registration...");
       setLocation("/chat");
-    } catch (error: any) {
+    } catch (err: any) {
       toast({
-        title: t('registrationFailed'),
-        description: error.message || t('accountCreationFailed'),
+        title: t("registrationFailed") || "Registrierung fehlgeschlagen",
+        description: friendlyErrorMessage(err, t("accountCreationFailed") || "Konto konnte nicht erstellt werden."),
         variant: "destructive",
       });
     } finally {
@@ -185,169 +258,179 @@ export default function WelcomePage() {
         {/* Logo and Brand */}
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img 
-              src={logoPath} 
-              alt="Whispergram Logo" 
+            <img
+              src={logoPath}
+              alt="Whispergram Logo"
               className="w-full h-full object-cover rounded-xl"
             />
           </div>
-          <p className="text-text-muted text-base sm:text-lg px-2">{t('welcomeDescription')}</p>
+          <p className="text-text-muted text-base sm:text-lg px-2">
+            {t("welcomeDescription")}
+          </p>
         </div>
 
-        {/* Language Selector - Mobile optimized */}
+        {/* Language Selector */}
         <div className="flex justify-center mb-4 sm:mb-8">
           <div className="bg-surface/80 border border-border rounded-xl p-3 sm:p-4 shadow-lg backdrop-blur-sm">
             <LanguageSelector />
           </div>
         </div>
 
-        {/* Login/Register Form - Mobile optimized */}
+        {/* Login/Register Form */}
         <div className="max-w-md mx-auto">
           <Card className="bg-surface border-border">
-          <CardContent className="p-4 sm:p-6">
-            <Tabs defaultValue="register" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2 bg-background">
-                <TabsTrigger value="register" className="flex items-center space-x-2">
-                  <UserPlus className="w-4 h-4" />
-                  <span>{t('createAccount')}</span>
-                </TabsTrigger>
-                <TabsTrigger value="login" className="flex items-center space-x-2">
-                  <LogIn className="w-4 h-4" />
-                  <span>{t('login')}</span>
-                </TabsTrigger>
-              </TabsList>
+            <CardContent className="p-4 sm:p-6">
+              <Tabs defaultValue="register" className="space-y-4">
+                <TabsList className="grid w-full grid-cols-2 bg-background">
+                  <TabsTrigger value="register" className="flex items-center space-x-2">
+                    <UserPlus className="w-4 h-4" />
+                    <span>{t("createAccount")}</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="login" className="flex items-center space-x-2">
+                    <LogIn className="w-4 h-4" />
+                    <span>{t("login")}</span>
+                  </TabsTrigger>
+                </TabsList>
 
-              <TabsContent value="register" className="space-y-4">
-                <h3 className="text-lg font-semibold text-foreground">{t('createAccount')}</h3>
-                <div className="space-y-3">
-                  <Input
-                    placeholder={t('enterUsername')}
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                  />
-                  <Input
-                    type="password"
-                    placeholder={t('enterPassword')}
-                    value={registerPassword}
-                    onChange={(e) => setRegisterPassword(e.target.value)}
-                    className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    {t('chooseUsernameHint')}
-                  </p>
-                </div>
-                <Button
-                  onClick={handleStartChatting}
-                  disabled={isLoading || !registerPassword || !username.trim()}
-                  className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
-                >
-{isLoading ? t('createAccount') + "..." : t('createAccount')}
-                </Button>
-              </TabsContent>
+                <TabsContent value="register" className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {t("createAccount")}
+                  </h3>
+                  <div className="space-y-3">
+                    <Input
+                      placeholder={t("enterUsername")}
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="bg-gray-800 border-border text-white placeholder:text-gray-400"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    <Input
+                      type="password"
+                      placeholder={t("enterPassword")}
+                      value={registerPassword}
+                      onChange={(e) => setRegisterPassword(e.target.value)}
+                      className="bg-gray-800 border-border text-white placeholder:text-gray-400"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      {t("chooseUsernameHint")}
+                    </p>
+                  </div>
+                  <Button
+                    onClick={handleStartChatting}
+                    disabled={isLoading || !registerPassword || !username.trim()}
+                    className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
+                  >
+                    {isLoading ? t("createAccount") + "..." : t("createAccount")}
+                  </Button>
+                </TabsContent>
 
-              <TabsContent value="login" className="space-y-4">
-                <h3 className="text-lg font-semibold text-foreground">{t('login')}</h3>
-                <div className="space-y-3">
-                  <Input
-                    placeholder={t('enterUsername')}
-                    value={loginUsername}
-                    onChange={(e) => setLoginUsername(e.target.value)}
-                    className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                  />
-                  <Input
-                    type="password"
-                    placeholder={t('enterPassword')}
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    className="bg-gray-800 border-border text-white placeholder:text-gray-400"
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    {t('enterCredentials')}
-                  </p>
-                </div>
-                <Button
-                  onClick={handleLogin}
-                  disabled={isLoading || !loginUsername.trim() || !loginPassword.trim()}
-                  className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
-                >
-                  {isLoading ? t('login') + "..." : t('login')}
-                </Button>
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
+                <TabsContent value="login" className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {t("login")}
+                  </h3>
+                  <div className="space-y-3">
+                    <Input
+                      placeholder={t("enterUsername")}
+                      value={loginUsername}
+                      onChange={(e) => setLoginUsername(e.target.value)}
+                      className="bg-gray-800 border-border text-white placeholder:text-gray-400"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    <Input
+                      type="password"
+                      placeholder={t("enterPassword")}
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      className="bg-gray-800 border-border text-white placeholder:text-gray-400"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      {t("enterCredentials")}
+                    </p>
+                  </div>
+                  <Button
+                    onClick={handleLogin}
+                    disabled={isLoading || !loginUsername.trim() || !loginPassword.trim()}
+                    className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
+                  >
+                    {isLoading ? t("login") + "..." : t("login")}
+                  </Button>
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Features Section - Professional Grid Layout */}
+        {/* Features */}
         <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t('features')}</h3>
+          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">
+            {t("features")}
+          </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
-            {/* Feature 1: End-to-End Encryption */}
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <Shield className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t('endToEndEncryption')}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t('encryptionEnabled')}</p>
+                <h4 className="font-semibold text-foreground mb-2">{t("endToEndEncryption")}</h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">{t("encryptionEnabled")}</p>
               </CardContent>
             </Card>
 
-            {/* Feature 2: Anonymous Access */}
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <EyeOff className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t('anonymousAccess')}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t('noPhoneRequired')}</p>
+                <h4 className="font-semibold text-foreground mb-2">{t("anonymousAccess")}</h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">{t("noPhoneRequired")}</p>
               </CardContent>
             </Card>
 
-            {/* Feature 3: Auto-Destruct Messages */}
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <Clock className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t('autoDestruct')}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t('selfDestructing')}</p>
+                <h4 className="font-semibold text-foreground mb-2">{t("autoDestruct")}</h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">{t("selfDestructing")}</p>
               </CardContent>
             </Card>
 
-            {/* Feature 4: Zero Data Storage */}
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <Database className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t('zeroStorage')}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t('zeroDataRetention')}</p>
+                <h4 className="font-semibold text-foreground mb-2">{t("zeroStorage")}</h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">{t("zeroDataRetention")}</p>
               </CardContent>
             </Card>
           </div>
         </div>
 
-        {/* Security Notice and Links */}
+        {/* Footer */}
         <div className="text-center space-y-4 pt-8 border-t border-border/50">
           <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">{t('messagesNotStored')}</p>
-            <p className="text-sm text-muted-foreground">{t('openSourceAudited')}</p>
+            <p className="text-sm text-muted-foreground">{t("messagesNotStored")}</p>
+            <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
           <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-6">
-            <button 
+            <button
               onClick={() => setLocation("/faq")}
               className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
             >
-              {t('frequentlyAskedQuestions')}
+              {t("frequentlyAskedQuestions")}
             </button>
             <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full"></div>
-            <button 
+            <button
               onClick={() => setLocation("/imprint")}
               className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
             >
-              {t('imprint')}
+              {t("imprint")}
             </button>
           </div>
         </div>
