@@ -44,21 +44,23 @@
   }
 
   html {
-    @apply dark;
     -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
     @apply bg-background text-foreground antialiased;
     font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     background-color: var(--bg-dark);
+    color: var(--text-primary);
   }
 
   /* INPUT FIX (Suchfeld & Chat Input) */
   input,
   textarea,
   select,
-  [role="textbox"] {
+  [role="textbox"],
+  [role="combobox"] {
     background-color: var(--surface) !important;
     color: var(--text-primary) !important;
     border-color: var(--border) !important;
@@ -109,7 +111,7 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  /* ✅ FIX: Input IMMER unten – NICHT sticky */
+  /* Input Bar unten */
   .chat-input-fixed {
     position: relative;
     flex-shrink: 0;
