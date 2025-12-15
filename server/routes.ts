@@ -1,4 +1,4 @@
-  import type { Express } from "express";
+import type { Express } from "express";
 import express from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -77,13 +77,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // REST API
   // ============================
 
-  // ✅ Health endpoint (du hast es getestet, also behalten wir es stabil)
+  // ✅ Health endpoint
   app.get("/api/health", (_req, res) => {
     return res.json({
       ok: true,
       service: "whisper3",
       time: new Date().toISOString(),
     });
+  });
+
+  // ✅ DB health endpoint (damit du sofort siehst ob DB hängt/down ist)
+  app.get("/api/db-health", async (_req, res) => {
+    try {
+      await storage.getUserByUsername("__db_health_check__");
+      return res.json({ ok: true, db: "up", time: new Date().toISOString() });
+    } catch (e: any) {
+      console.error("❌ DB HEALTH ERROR:", e);
+      return res.status(500).json({
+        ok: false,
+        db: "down",
+        time: new Date().toISOString(),
+        message: e?.message || String(e),
+      });
+    }
   });
 
   // Register
@@ -292,6 +308,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     perMessageDeflate: false,
   });
 
+  // Heartbeat
   setInterval(() => {
     wss.clients.forEach((client: any) => {
       if (client.isAlive === false) return client.terminate();
@@ -300,6 +317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   }, 30000);
 
+  // Cleanup expired messages
   setInterval(async () => {
     try {
       const deletedCount = await storage.deleteExpiredMessages();
@@ -358,6 +376,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
+        // typing
         if (parsed?.type === "typing") {
           const receiverId = toInt(parsed.receiverId, 0);
           const senderId = toInt(parsed.senderId, 0);
@@ -369,9 +388,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           const receiverClient = connectedClients.get(receiverId);
           if (receiverClient?.ws?.readyState === WebSocket.OPEN) {
-            receiverClient.ws.send(
-              JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping })
-            );
+            receiverClient.ws.send(JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping }));
           }
           return;
         }
