@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,23 +17,19 @@ import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 type ApiOk<T> = { ok: true; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
 
-type UserDto = { id: number; username: string; publicKey: string };
+function isObject(v: any): v is Record<string, any> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
 
 /**
- * ✅ postJson
- * - nutzt immer RELATIVE URL (wichtig bei Render + SPA)
- * - hat Timeout (sonst "lädt ewig")
- * - baut lesbare Fehlermeldungen
+ * ✅ postJson: relative URL + Timeout + klare Fehlermeldungen
  */
 async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<T> {
   const url = path.startsWith("/") ? path : `/${path}`;
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let res: Response;
-  let text = "";
-
   try {
     res = await fetch(url, {
       method: "POST",
@@ -42,45 +38,37 @@ async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<
       credentials: "include",
       signal: controller.signal,
     });
-
-    text = await res.text();
   } catch (e: any) {
     clearTimeout(timer);
-
-    // Timeout / Abort
-    if (e?.name === "AbortError") {
-      throw new Error("Timeout: Server antwortet nicht (API hängt / DB down).");
-    }
-
-    // Network / CORS / DNS / Offline
+    if (e?.name === "AbortError") throw new Error("Timeout: Server antwortet nicht (15s).");
     throw new Error(e?.message || "Network error (fetch failed)");
-  } finally {
-    clearTimeout(timer);
   }
 
-  // Versuche JSON zu parsen
+  clearTimeout(timer);
+
+  const text = await res.text();
   let json: any = null;
+
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
     json = null;
   }
 
-  // Fehlerfall
+  // Wenn NICHT ok: bestmögliche Message
   if (!res.ok) {
     const msg =
       (json && (json.message || json.error)) ||
-      (text && text.slice(0, 500)) ||
+      (text && text.slice(0, 300)) ||
       res.statusText ||
       "Request failed";
-
     throw new Error(`${res.status}: ${msg}`);
   }
 
-  // 200 aber kein JSON => meist SPA/HTML statt API oder falsche Route
+  // ok, aber kein JSON -> sehr wahrscheinlich SPA/NotFound/HTML statt API
   if (json === null) {
     throw new Error(
-      "Server returned non-JSON response. /api/login oder /api/register liefert HTML statt JSON (Routing/Server-Problem)."
+      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(0, 200)}`
     );
   }
 
@@ -96,9 +84,8 @@ export default function WelcomePage() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
 
-  // getrennte Loading-States, damit nicht alles blockiert / sauberer UX
-  const [isRegisterLoading, setIsRegisterLoading] = useState(false);
-  const [isLoginLoading, setIsLoginLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const inFlight = useRef(false);
 
   const { toast } = useToast();
   const { t } = useLanguage();
@@ -108,41 +95,41 @@ export default function WelcomePage() {
   }, []);
 
   function showNiceError(title: string, err: any) {
-    const raw =
+    const msg =
       typeof err?.message === "string" && err.message.trim().length > 0
         ? err.message
         : "Unbekannter Fehler. Bitte neu laden.";
 
-    toast({
-      title,
-      description: raw,
-      variant: "destructive",
-    });
-
+    toast({ title, description: msg, variant: "destructive" });
     console.error("❌ AUTH ERROR:", err);
   }
 
-  const handleLogin = async () => {
-    const u = loginUsername.trim();
-    const p = loginPassword;
+  const handleLogin = async (e?: any) => {
+    e?.preventDefault?.();
 
-    if (!u || !p) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    console.log("👉 LOGIN CLICK", { loginUsername });
+
+    if (!loginUsername.trim() || !loginPassword.trim()) {
       toast({
         title: t("error"),
         description: t("enterCredentials"),
         variant: "destructive",
       });
+      inFlight.current = false;
       return;
     }
 
-    setIsLoginLoading(true);
+    setIsLoading(true);
     try {
-      const data = await postJson<ApiOk<UserDto> | ApiErr>("/api/login", {
-        username: u,
-        password: p,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/login",
+        { username: loginUsername.trim(), password: loginPassword }
+      );
 
-      if (!("ok" in data) || data.ok !== true) {
+      if (!isObject(data) || data.ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
       }
 
@@ -153,7 +140,7 @@ export default function WelcomePage() {
       if (existingData) {
         try {
           const parsed = JSON.parse(existingData);
-          if (parsed?.username === u) privateKey = parsed.privateKey || "";
+          if (parsed?.username === loginUsername.trim()) privateKey = parsed.privateKey || "";
         } catch {}
       }
 
@@ -165,29 +152,34 @@ export default function WelcomePage() {
       const userProfile = { ...data.user, privateKey };
       profileProtection.storeProfile(userProfile);
 
-      toast({
-        title: t("welcomeBack"),
-        description: t("loginSuccess"),
-      });
-
+      toast({ title: t("welcomeBack"), description: t("loginSuccess") });
+      console.log("✅ LOGIN OK -> /chat");
       setLocation("/chat");
     } catch (err: any) {
       showNiceError(t("error"), err);
     } finally {
-      setIsLoginLoading(false);
+      setIsLoading(false);
+      inFlight.current = false;
     }
   };
 
-  const handleStartChatting = async () => {
-    const finalUsername = username.trim();
-    const pw = registerPassword;
+  const handleStartChatting = async (e?: any) => {
+    e?.preventDefault?.();
 
-    if (pw.trim().length < 6) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    console.log("👉 REGISTER CLICK", { username });
+
+    const finalUsername = username.trim();
+
+    if (registerPassword.trim().length < 6) {
       toast({
         title: t("passwordTooShort"),
         description: t("passwordMinLength"),
         variant: "destructive",
       });
+      inFlight.current = false;
       return;
     }
 
@@ -197,36 +189,34 @@ export default function WelcomePage() {
         description: t("usernameMinLength"),
         variant: "destructive",
       });
+      inFlight.current = false;
       return;
     }
 
-    setIsRegisterLoading(true);
+    setIsLoading(true);
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<UserDto> | ApiErr>("/api/register", {
-        username: finalUsername,
-        password: pw,
-        publicKey,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/register",
+        { username: finalUsername, password: registerPassword, publicKey }
+      );
 
-      if (!("ok" in data) || data.ok !== true) {
+      if (!isObject(data) || data.ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
       }
 
       const userProfile = { ...data.user, privateKey };
       profileProtection.storeProfile(userProfile);
 
-      toast({
-        title: t("welcomeToWhispergram"),
-        description: t("accountCreated"),
-      });
-
+      toast({ title: t("welcomeToWhispergram"), description: t("accountCreated") });
+      console.log("✅ REGISTER OK -> /chat");
       setLocation("/chat");
     } catch (err: any) {
       showNiceError(t("registrationFailed"), err);
     } finally {
-      setIsRegisterLoading(false);
+      setIsLoading(false);
+      inFlight.current = false;
     }
   };
 
@@ -281,11 +271,12 @@ export default function WelcomePage() {
                   </div>
 
                   <Button
+                    type="button"
                     onClick={handleStartChatting}
-                    disabled={isRegisterLoading || !registerPassword || !username.trim()}
+                    disabled={isLoading || !registerPassword || !username.trim()}
                     className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
                   >
-                    {isRegisterLoading ? t("createAccount") + "..." : t("createAccount")}
+                    {isLoading ? t("createAccount") + "..." : t("createAccount")}
                   </Button>
                 </TabsContent>
 
@@ -309,11 +300,12 @@ export default function WelcomePage() {
                   </div>
 
                   <Button
+                    type="button"
                     onClick={handleLogin}
-                    disabled={isLoginLoading || !loginUsername.trim() || !loginPassword.trim()}
+                    disabled={isLoading || !loginUsername.trim() || !loginPassword.trim()}
                     className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
                   >
-                    {isLoginLoading ? t("login") + "..." : t("login")}
+                    {isLoading ? t("login") + "..." : t("login")}
                   </Button>
                 </TabsContent>
               </Tabs>
@@ -321,6 +313,7 @@ export default function WelcomePage() {
           </Card>
         </div>
 
+        {/* Features (unverändert) */}
         <div className="mt-12 mb-8">
           <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
