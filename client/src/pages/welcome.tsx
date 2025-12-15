@@ -17,28 +17,48 @@ import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 type ApiOk<T> = { ok: true; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
 
+type UserDto = { id: number; username: string; publicKey: string };
+
 /**
- * ✅ postJson: IMMER relative URL benutzen
- * -> funktioniert auf Render, iOS Safari, Android Chrome, Desktop, etc.
+ * ✅ postJson
+ * - nutzt immer RELATIVE URL (wichtig bei Render + SPA)
+ * - hat Timeout (sonst "lädt ewig")
+ * - baut lesbare Fehlermeldungen
  */
-async function postJson<T>(path: string, data: any): Promise<T> {
+async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<T> {
   const url = path.startsWith("/") ? path : `/${path}`;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   let res: Response;
+  let text = "";
+
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
       credentials: "include",
+      signal: controller.signal,
     });
+
+    text = await res.text();
   } catch (e: any) {
+    clearTimeout(timer);
+
+    // Timeout / Abort
+    if (e?.name === "AbortError") {
+      throw new Error("Timeout: Server antwortet nicht (API hängt / DB down).");
+    }
+
+    // Network / CORS / DNS / Offline
     throw new Error(e?.message || "Network error (fetch failed)");
+  } finally {
+    clearTimeout(timer);
   }
 
-  const text = await res.text();
-
-  // Versuche JSON zu parsen, falls Server JSON sendet
+  // Versuche JSON zu parsen
   let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -46,21 +66,21 @@ async function postJson<T>(path: string, data: any): Promise<T> {
     json = null;
   }
 
-  // Fehlerfall: bessere Message zusammenbauen
+  // Fehlerfall
   if (!res.ok) {
     const msg =
       (json && (json.message || json.error)) ||
-      (text && text.slice(0, 300)) ||
+      (text && text.slice(0, 500)) ||
       res.statusText ||
       "Request failed";
 
     throw new Error(`${res.status}: ${msg}`);
   }
 
-  // Server liefert 200 aber kein JSON => meistens falsches Routing / HTML Antwort
+  // 200 aber kein JSON => meist SPA/HTML statt API oder falsche Route
   if (json === null) {
     throw new Error(
-      "Server returned non-JSON response. Check that /api/login and /api/register exist and return JSON."
+      "Server returned non-JSON response. /api/login oder /api/register liefert HTML statt JSON (Routing/Server-Problem)."
     );
   }
 
@@ -76,13 +96,14 @@ export default function WelcomePage() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
 
-  const [isLoading, setIsLoading] = useState(false);
+  // getrennte Loading-States, damit nicht alles blockiert / sauberer UX
+  const [isRegisterLoading, setIsRegisterLoading] = useState(false);
+  const [isLoginLoading, setIsLoginLoading] = useState(false);
 
   const { toast } = useToast();
   const { t } = useLanguage();
 
   useEffect(() => {
-    // ✅ nur einmal (bei dir war das früher doppelt)
     SessionPersistence.getInstance().initialize();
   }, []);
 
@@ -92,15 +113,9 @@ export default function WelcomePage() {
         ? err.message
         : "Unbekannter Fehler. Bitte neu laden.";
 
-    // Wenn “Invalid URL” auftaucht, erklären wir es genauer
-    const msg =
-      raw.includes("Invalid URL")
-        ? "400: Invalid URL. Das heißt meistens: dein Frontend ruft eine falsche API-URL auf ODER der Server bekommt keinen gültigen Request. Bitte sicherstellen, dass /api/login und /api/register auf Render existieren."
-        : raw;
-
     toast({
       title,
-      description: msg,
+      description: raw,
       variant: "destructive",
     });
 
@@ -108,7 +123,10 @@ export default function WelcomePage() {
   }
 
   const handleLogin = async () => {
-    if (!loginUsername.trim() || !loginPassword.trim()) {
+    const u = loginUsername.trim();
+    const p = loginPassword;
+
+    if (!u || !p) {
       toast({
         title: t("error"),
         description: t("enterCredentials"),
@@ -117,12 +135,12 @@ export default function WelcomePage() {
       return;
     }
 
-    setIsLoading(true);
+    setIsLoginLoading(true);
     try {
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/login",
-        { username: loginUsername.trim(), password: loginPassword }
-      );
+      const data = await postJson<ApiOk<UserDto> | ApiErr>("/api/login", {
+        username: u,
+        password: p,
+      });
 
       if (!("ok" in data) || data.ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
@@ -135,7 +153,7 @@ export default function WelcomePage() {
       if (existingData) {
         try {
           const parsed = JSON.parse(existingData);
-          if (parsed?.username === loginUsername.trim()) privateKey = parsed.privateKey || "";
+          if (parsed?.username === u) privateKey = parsed.privateKey || "";
         } catch {}
       }
 
@@ -156,14 +174,15 @@ export default function WelcomePage() {
     } catch (err: any) {
       showNiceError(t("error"), err);
     } finally {
-      setIsLoading(false);
+      setIsLoginLoading(false);
     }
   };
 
   const handleStartChatting = async () => {
     const finalUsername = username.trim();
+    const pw = registerPassword;
 
-    if (registerPassword.trim().length < 6) {
+    if (pw.trim().length < 6) {
       toast({
         title: t("passwordTooShort"),
         description: t("passwordMinLength"),
@@ -181,14 +200,15 @@ export default function WelcomePage() {
       return;
     }
 
-    setIsLoading(true);
+    setIsRegisterLoading(true);
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/register",
-        { username: finalUsername, password: registerPassword, publicKey }
-      );
+      const data = await postJson<ApiOk<UserDto> | ApiErr>("/api/register", {
+        username: finalUsername,
+        password: pw,
+        publicKey,
+      });
 
       if (!("ok" in data) || data.ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
@@ -206,7 +226,7 @@ export default function WelcomePage() {
     } catch (err: any) {
       showNiceError(t("registrationFailed"), err);
     } finally {
-      setIsLoading(false);
+      setIsRegisterLoading(false);
     }
   };
 
@@ -215,15 +235,9 @@ export default function WelcomePage() {
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img
-              src={logoPath}
-              alt="Whispergram Logo"
-              className="w-full h-full object-cover rounded-xl"
-            />
+            <img src={logoPath} alt="Whispergram Logo" className="w-full h-full object-cover rounded-xl" />
           </div>
-          <p className="text-text-muted text-base sm:text-lg px-2">
-            {t("welcomeDescription")}
-          </p>
+          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
         </div>
 
         <div className="flex justify-center mb-4 sm:mb-8">
@@ -248,9 +262,7 @@ export default function WelcomePage() {
                 </TabsList>
 
                 <TabsContent value="register" className="space-y-4">
-                  <h3 className="text-lg font-semibold text-foreground">
-                    {t("createAccount")}
-                  </h3>
+                  <h3 className="text-lg font-semibold text-foreground">{t("createAccount")}</h3>
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
@@ -265,17 +277,15 @@ export default function WelcomePage() {
                       onChange={(e) => setRegisterPassword(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                     />
-                    <p className="text-sm text-muted-foreground">
-                      {t("chooseUsernameHint")}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("chooseUsernameHint")}</p>
                   </div>
 
                   <Button
                     onClick={handleStartChatting}
-                    disabled={isLoading || !registerPassword || !username.trim()}
+                    disabled={isRegisterLoading || !registerPassword || !username.trim()}
                     className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
                   >
-                    {isLoading ? t("createAccount") + "..." : t("createAccount")}
+                    {isRegisterLoading ? t("createAccount") + "..." : t("createAccount")}
                   </Button>
                 </TabsContent>
 
@@ -300,10 +310,10 @@ export default function WelcomePage() {
 
                   <Button
                     onClick={handleLogin}
-                    disabled={isLoading || !loginUsername.trim() || !loginPassword.trim()}
+                    disabled={isLoginLoading || !loginUsername.trim() || !loginPassword.trim()}
                     className="w-full bg-primary hover:bg-primary/90 text-white font-medium py-3"
                   >
-                    {isLoading ? t("login") + "..." : t("login")}
+                    {isLoginLoading ? t("login") + "..." : t("login")}
                   </Button>
                 </TabsContent>
               </Tabs>
@@ -312,9 +322,7 @@ export default function WelcomePage() {
         </div>
 
         <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">
-            {t("features")}
-          </h3>
+          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
@@ -364,17 +372,11 @@ export default function WelcomePage() {
             <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
           <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-6">
-            <button
-              onClick={() => setLocation("/faq")}
-              className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
-            >
+            <button onClick={() => setLocation("/faq")} className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
               {t("frequentlyAskedQuestions")}
             </button>
             <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full"></div>
-            <button
-              onClick={() => setLocation("/imprint")}
-              className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
-            >
+            <button onClick={() => setLocation("/imprint")} className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
               {t("imprint")}
             </button>
           </div>
