@@ -1,27 +1,28 @@
-import { Pool, neonConfig } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-serverless";
-import ws from "ws";
+// server/db.ts
+import { drizzle } from "drizzle-orm/node-postgres";
+import pkg from "pg";
 import * as schema from "@shared/schema";
 
-neonConfig.webSocketConstructor = ws;
+const { Pool } = pkg;
 
-// ✅ Robust: trim + remove accidental surrounding quotes
-const rawUrl = process.env.DATABASE_URL;
-const DATABASE_URL = rawUrl ? rawUrl.trim().replace(/^"+|"+$/g, "") : "";
-
-if (!DATABASE_URL) {
-  throw new Error("DATABASE_URL must be set (Render → Environment).");
+// ===============================
+// ENV CHECK
+// ===============================
+if (!process.env.DATABASE_URL) {
+  throw new Error("❌ DATABASE_URL is not set (Render → Environment)");
 }
 
-// Optional: quick sanity check to avoid Neon "Invalid URL" surprises
-if (!/^postgres(ql)?:\/\//i.test(DATABASE_URL)) {
-  throw new Error(
-    `DATABASE_URL looks invalid (must start with postgres:// or postgresql://). Got: ${DATABASE_URL.slice(
-      0,
-      20
-    )}...`
-  );
-}
+// ===============================
+// POSTGRES POOL (Render-kompatibel)
+// ===============================
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // WICHTIG für Render
+  },
+});
 
-export const pool = new Pool({ connectionString: DATABASE_URL });
-export const db = drizzle({ client: pool, schema });
+// ===============================
+// DRIZZLE INSTANCE
+// ===============================
+export const db = drizzle(pool, { schema });
