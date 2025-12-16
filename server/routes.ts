@@ -9,6 +9,8 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 // ============================
 // Uploads
@@ -31,33 +33,54 @@ function toInt(v: any, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password).digest("hex");
-}
-
-function verifyPassword(password: string, hash: string): boolean {
-  return crypto.createHash("sha256").update(password).digest("hex") === hash;
-}
-
 function safeJson(res: any, status: number, payload: any) {
   return res.status(status).json(payload);
 }
 
-/**
- * Normalisiert destructTimer:
- * - wenn Client ms sendet -> in Sekunden umrechnen
- * - clamp auf min/max
- */
 function normalizeDestructTimerSeconds(raw: any) {
   let t = toInt(raw, 86400);
-
   if (t > 100000) t = Math.floor(t / 1000);
   if (t < 5) t = 5;
-
   const max = 7 * 24 * 60 * 60;
   if (t > max) t = max;
-
   return t;
+}
+
+// ============================
+// JWT helpers
+// ============================
+const JWT_SECRET = process.env.JWT_SECRET || "";
+if (!JWT_SECRET) {
+  console.warn("⚠️ JWT_SECRET is not set. Set it in Render -> Environment.");
+}
+
+type JwtPayload = { userId: number; username: string };
+
+function signToken(payload: JwtPayload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+}
+
+function verifyToken(token: string): JwtPayload {
+  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+}
+
+function getBearerToken(req: any): string | null {
+  const h = req.headers?.authorization || "";
+  if (typeof h === "string" && h.startsWith("Bearer ")) return h.slice(7).trim();
+  return null;
+}
+
+// REST auth middleware
+function requireAuth(req: any, res: any, next: any) {
+  try {
+    const token = getBearerToken(req);
+    if (!token) return safeJson(res, 401, { ok: false, message: "Missing token" });
+    const payload = verifyToken(token);
+    req.auth = payload;
+    next();
+  } catch {
+    return safeJson(res, 401, { ok: false, message: "Invalid token" });
+  }
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -77,32 +100,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // REST API
   // ============================
 
-  // ✅ Health endpoint
   app.get("/api/health", (_req, res) => {
-    return res.json({
-      ok: true,
-      service: "whisper3",
-      time: new Date().toISOString(),
-    });
+    return res.json({ ok: true, service: "whisper3", time: new Date().toISOString() });
   });
 
-  // ✅ DB health endpoint (damit du sofort siehst ob DB hängt/down ist)
-  app.get("/api/db-health", async (_req, res) => {
-    try {
-      await storage.getUserByUsername("__db_health_check__");
-      return res.json({ ok: true, db: "up", time: new Date().toISOString() });
-    } catch (e: any) {
-      console.error("❌ DB HEALTH ERROR:", e);
-      return res.status(500).json({
-        ok: false,
-        db: "down",
-        time: new Date().toISOString(),
-        message: e?.message || String(e),
-      });
-    }
-  });
-
-  // Register
+  // Register (returns JWT)
   app.post("/api/register", async (req, res) => {
     try {
       const username = String(req.body?.username || "").trim();
@@ -110,39 +112,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const publicKey = String(req.body?.publicKey || "");
 
       if (!username || !password || !publicKey) {
-        return safeJson(res, 400, {
-          ok: false,
-          message: "Username, password, and publicKey are required",
-        });
+        return safeJson(res, 400, { ok: false, message: "Username, password, and publicKey are required" });
+      }
+      if (password.length < 6) {
+        return safeJson(res, 400, { ok: false, message: "Password too short (min 6)" });
       }
 
       const existing = await storage.getUserByUsername(username);
-      if (existing) {
-        return safeJson(res, 409, { ok: false, message: "Username already exists" });
-      }
+      if (existing) return safeJson(res, 409, { ok: false, message: "Username already exists" });
+
+      const passwordHash = await bcrypt.hash(password, 12);
 
       const user = await storage.createUser({
         username,
-        passwordHash: hashPassword(password),
+        passwordHash,
         publicKey,
       } as any);
 
       await storage.updateUserOnlineStatus(user.id, true);
 
+      const token = signToken({ userId: user.id, username: user.username });
+
       return res.json({
         ok: true,
+        token,
         user: { id: user.id, username: user.username, publicKey: user.publicKey },
       });
     } catch (err: any) {
       console.error("REGISTRATION ERROR:", err);
-      return safeJson(res, 500, {
-        ok: false,
-        message: err?.message || "Registration failed",
-      });
+      return safeJson(res, 500, { ok: false, message: err?.message || "Registration failed" });
     }
   });
 
-  // Login
+  // Login (returns JWT)
   app.post("/api/login", async (req, res) => {
     try {
       const parsed = loginUserSchema.parse(req.body);
@@ -150,18 +152,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const password = String(parsed.password || "");
 
       const user = await storage.getUserByUsername(username);
-      if (!user) {
-        return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
-      }
+      if (!user) return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
 
-      if (!verifyPassword(password, (user as any).passwordHash)) {
-        return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
-      }
+      const ok = await bcrypt.compare(password, (user as any).passwordHash);
+      if (!ok) return safeJson(res, 401, { ok: false, message: "Invalid username or password" });
 
       await storage.updateUserOnlineStatus(user.id, true);
 
+      const token = signToken({ userId: user.id, username: user.username });
+
       return res.json({
         ok: true,
+        token,
         user: { id: user.id, username: user.username, publicKey: user.publicKey },
       });
     } catch (err: any) {
@@ -173,11 +175,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Search users
-  app.get("/api/search-users", async (req, res) => {
+  // ---- Protected endpoints (requireAuth) ----
+
+  app.get("/api/search-users", requireAuth, async (req: any, res) => {
     try {
       const q = String(req.query?.q || "").trim();
-      const excludeId = toInt(req.query?.exclude ?? req.query?.excludeId, 0);
+      const excludeId = req.auth?.userId ?? 0;
       if (!q) return res.json([]);
       const users = await storage.searchUsers(q, excludeId);
       return res.json(users);
@@ -187,14 +190,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Create/get chat between 2 users
-  app.post("/api/chats", async (req, res) => {
+  app.post("/api/chats", requireAuth, async (req: any, res) => {
     try {
       const participant1Id = toInt(req.body?.participant1Id, 0);
       const participant2Id = toInt(req.body?.participant2Id, 0);
+
+      // ✅ only allow the logged-in user to be participant1
+      if (participant1Id !== req.auth.userId) {
+        return safeJson(res, 403, { ok: false, message: "Forbidden" });
+      }
+
       if (!participant1Id || !participant2Id) {
         return safeJson(res, 400, { ok: false, message: "participant1Id and participant2Id are required" });
       }
+
       const chat = await storage.getOrCreateChatByParticipants(participant1Id, participant2Id);
       return res.json({ ok: true, chat });
     } catch (err) {
@@ -203,11 +212,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get chats
-  app.get("/api/chats/:userId", async (req, res) => {
+  app.get("/api/chats/:userId", requireAuth, async (req: any, res) => {
     try {
       const userId = toInt(req.params.userId, 0);
-      if (!userId) return safeJson(res, 400, { ok: false, message: "Invalid userId" });
+      if (userId !== req.auth.userId) {
+        return safeJson(res, 403, { ok: false, message: "Forbidden" });
+      }
       const chats = await storage.getChatsByUserId(userId);
       return res.json(chats);
     } catch (err) {
@@ -216,10 +226,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get messages for chat
-  app.get("/api/chats/:chatId/messages", async (req, res) => {
+  app.get("/api/chats/:chatId/messages", requireAuth, async (_req, res) => {
+    // Optional: hier könnte man zusätzlich prüfen, ob user im chat ist.
     try {
-      const chatId = toInt(req.params.chatId, 0);
+      const chatId = toInt(_req.params.chatId, 0);
       if (!chatId) return safeJson(res, 400, { ok: false, message: "Invalid chatId" });
       const msgs = await storage.getMessagesByChat(chatId);
       return res.json(msgs);
@@ -229,12 +239,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Mark chat read
-  app.post("/api/chats/:chatId/mark-read", async (req, res) => {
+  app.post("/api/chats/:chatId/mark-read", requireAuth, async (req: any, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
-      const userId = toInt(req.body?.userId, 0);
-      if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
+      const userId = req.auth.userId;
+      if (!chatId) return safeJson(res, 400, { ok: false, message: "chatId required" });
 
       await storage.resetUnreadCount(chatId, userId);
       return res.json({ ok: true, success: true });
@@ -244,12 +253,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Delete chat for user
-  app.post("/api/chats/:chatId/delete", async (req, res) => {
+  app.post("/api/chats/:chatId/delete", requireAuth, async (req: any, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
-      const userId = toInt(req.body?.userId, 0);
-      if (!chatId || !userId) return safeJson(res, 400, { ok: false, message: "chatId and userId required" });
+      const userId = req.auth.userId;
+      if (!chatId) return safeJson(res, 400, { ok: false, message: "chatId required" });
 
       await storage.deleteChatForUser(userId, chatId);
       return res.json({ ok: true, success: true });
@@ -259,12 +267,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Block user
-  app.post("/api/users/:userId/block", async (req, res) => {
+  app.post("/api/users/:userId/block", requireAuth, async (req: any, res) => {
     try {
       const blockedUserId = toInt(req.params.userId, 0);
-      const blockerId = toInt(req.body?.blockerId, 0);
-      if (!blockedUserId || !blockerId) return safeJson(res, 400, { ok: false, message: "blocked userId and blockerId required" });
+      const blockerId = req.auth.userId;
+      if (!blockedUserId) return safeJson(res, 400, { ok: false, message: "blocked userId required" });
 
       await storage.blockUser(blockerId, blockedUserId);
       return res.json({ ok: true, success: true });
@@ -274,8 +281,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Upload
-  app.post("/api/upload", upload.single("file"), async (req, res) => {
+  app.post("/api/upload", requireAuth, upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return safeJson(res, 400, { ok: false, message: "No file uploaded" });
 
@@ -308,7 +314,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     perMessageDeflate: false,
   });
 
-  // Heartbeat
   setInterval(() => {
     wss.clients.forEach((client: any) => {
       if (client.isAlive === false) return client.terminate();
@@ -317,7 +322,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   }, 30000);
 
-  // Cleanup expired messages
   setInterval(async () => {
     try {
       const deletedCount = await storage.deleteExpiredMessages();
@@ -341,9 +345,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const xff = req.headers["x-forwarded-for"];
     const ip =
-      typeof xff === "string" && xff.length > 0
-        ? xff.split(",")[0].trim()
-        : req.socket?.remoteAddress || "unknown";
+      typeof xff === "string" && xff.length > 0 ? xff.split(",")[0].trim() : req.socket?.remoteAddress || "unknown";
 
     const curr = ipConnCount.get(ip) ?? 0;
     if (curr >= MAX_CONNS_PER_IP) {
@@ -376,14 +378,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
+        // ✅ JOIN requires token (no more userId-faking)
+        if (parsed?.type === "join") {
+          const token = String(parsed?.token || "");
+          if (!token) {
+            ws.send(JSON.stringify({ type: "error", message: "Missing token" }));
+            return;
+          }
+
+          let payload: JwtPayload;
+          try {
+            payload = verifyToken(token);
+          } catch {
+            ws.send(JSON.stringify({ type: "error", message: "Invalid token" }));
+            return;
+          }
+
+          joinedUserId = payload.userId;
+          connectedClients.set(joinedUserId, { ws, userId: joinedUserId });
+          await storage.updateUserOnlineStatus(joinedUserId, true);
+
+          ws.send(JSON.stringify({ type: "join_confirmed", ok: true, userId: joinedUserId }));
+          broadcast({ type: "user_status", userId: joinedUserId, isOnline: true }, joinedUserId);
+          return;
+        }
+
         // typing
         if (parsed?.type === "typing") {
+          if (!joinedUserId) return;
+
           const receiverId = toInt(parsed.receiverId, 0);
           const senderId = toInt(parsed.senderId, 0);
           const chatId = toInt(parsed.chatId, 0);
           const isTyping = Boolean(parsed.isTyping);
 
-          if (!joinedUserId) return;
           if (senderId !== joinedUserId) return;
 
           const receiverClient = connectedClients.get(receiverId);
@@ -398,7 +426,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (parsed.type === "message") {
           const msgData = parsed.message || parsed;
           validatedMessage = {
-            // @ts-ignore
             type: "message",
             chatId: msgData.chatId || null,
             senderId: msgData.senderId,
@@ -414,19 +441,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         switch (validatedMessage.type) {
-          case "join": {
-            joinedUserId = (validatedMessage as any).userId;
-            connectedClients.set(joinedUserId, { ws, userId: joinedUserId });
-            await storage.updateUserOnlineStatus(joinedUserId, true);
-
-            ws.send(JSON.stringify({ type: "join_confirmed", ok: true, userId: joinedUserId }));
-            broadcast({ type: "user_status", userId: joinedUserId, isOnline: true }, joinedUserId);
-            break;
-          }
-
           case "message": {
             if (!joinedUserId) {
-              ws.send(JSON.stringify({ type: "error", message: "User not joined - send join first" }));
+              ws.send(JSON.stringify({ type: "error", message: "Not joined" }));
               return;
             }
 
@@ -444,21 +461,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            if ((storage as any).isChatDeletedForUser && (storage as any).reactivateChatForUser) {
-              const wasDeleted = await (storage as any).isChatDeletedForUser(receiverId, chat.id);
-              if (wasDeleted) await (storage as any).reactivateChatForUser(receiverId, chat.id);
-            }
+            // re-activate deleted chat for receiver if needed
+            const wasDeleted = await storage.isChatDeletedForUser(receiverId, chat.id);
+            if (wasDeleted) await storage.reactivateChatForUser(receiverId, chat.id);
 
             const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
             const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
-
-            const content = (validatedMessage as any).content;
 
             const newMessage = await storage.createMessage({
               chatId: chat.id,
               senderId,
               receiverId,
-              content,
+              content: (validatedMessage as any).content,
               messageType: (validatedMessage as any).messageType,
               fileName: (validatedMessage as any).fileName,
               fileSize: (validatedMessage as any).fileSize,
@@ -479,6 +493,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             break;
           }
+
+          default:
+            // ignore
+            break;
         }
       } catch (err) {
         console.error("WebSocket message error:", err);
