@@ -5,6 +5,9 @@ export class WebSocketClient {
   private reconnectInterval = 3000;
   private eventHandlers: Map<string, Function[]> = new Map();
 
+  private shouldReconnect = true;
+  private joined = false;
+
   constructor(private userId: number) {
     console.log("🎯 WebSocketClient constructor for user:", userId);
     this.connect();
@@ -12,14 +15,13 @@ export class WebSocketClient {
 
   private getToken(): string | null {
     try {
-      // du speicherst token meistens im localStorage als "token" oder im "user" objekt
       const direct = localStorage.getItem("token");
       if (direct) return direct;
 
       const userRaw = localStorage.getItem("user");
       if (!userRaw) return null;
       const user = JSON.parse(userRaw);
-      return user?.token ?? null;
+      return user?.token ?? user?.accessToken ?? null;
     } catch {
       return null;
     }
@@ -27,6 +29,9 @@ export class WebSocketClient {
 
   private connect() {
     try {
+      this.joined = false;
+      this.shouldReconnect = true;
+
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws`;
 
@@ -41,44 +46,52 @@ export class WebSocketClient {
         const token = this.getToken();
         if (!token) {
           console.error("❌ No JWT token found in localStorage. Cannot JOIN websocket.");
-          // Optional: close connection to avoid server spam
+          // ✅ Wichtig: NICHT reconnecten, solange kein Token da ist
+          this.shouldReconnect = false;
           try { this.ws?.close(1008, "Missing token"); } catch {}
           return;
         }
 
-        // ✅ NEW: join with token (server expects this)
+        // ✅ JOIN mit Token (Server erwartet das)
         const joinMessage = { type: "join", token };
         console.log("📤 Sending join message:", joinMessage);
         this.ws!.send(JSON.stringify(joinMessage));
 
+        // connected = Socket offen (noch nicht zwingend joined)
         this.emit("connected");
       };
 
       this.ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.type) this.emit(message.type, message);
+
+          // ✅ JOIN bestätigt -> ab jetzt ist die Verbindung “voll” bereit
+          if (message?.type === "join_confirmed") {
+            this.joined = true;
+            console.log("✅ WebSocket JOIN confirmed:", message);
+            this.emit("joined", message);
+          }
+
+          if (message?.type) this.emit(message.type, message);
           this.emit("message", message);
         } catch (error) {
           console.error("Failed to parse WebSocket message:", error);
         }
       };
 
-      this.ws.onclose = () => {
-        console.log("WebSocket disconnected");
+      this.ws.onclose = (ev) => {
+        console.log("WebSocket disconnected", ev?.code, ev?.reason);
         this.emit("disconnected");
-        this.attemptReconnect();
+        if (this.shouldReconnect) this.attemptReconnect();
       };
 
       this.ws.onerror = (error) => {
         console.error("❌ WebSocket error:", error);
-        console.error("❌ WebSocket URL was:", wsUrl);
-        console.error("❌ Current readyState:", this.ws?.readyState);
         this.emit("error", error);
       };
     } catch (error) {
       console.error("Failed to create WebSocket connection:", error);
-      this.attemptReconnect();
+      if (this.shouldReconnect) this.attemptReconnect();
     }
   }
 
@@ -93,6 +106,12 @@ export class WebSocketClient {
   }
 
   send(message: any) {
+    // Optional: nur senden wenn “joined”
+    if (!this.joined) {
+      console.warn("⚠️ WS not joined yet. Not sending:", message?.type);
+      return false;
+    }
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
       return true;
@@ -122,6 +141,8 @@ export class WebSocketClient {
   }
 
   disconnect() {
+    this.shouldReconnect = false;
+    this.joined = false;
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -131,5 +152,9 @@ export class WebSocketClient {
 
   isConnected() {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  isJoined() {
+    return this.joined;
   }
 }
