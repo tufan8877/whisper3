@@ -14,7 +14,7 @@ import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 
-type ApiOk<T> = { ok: true; user: T };
+type ApiOk<T> = { ok: true; token?: string; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
 
 function isObject(v: any): v is Record<string, any> {
@@ -124,13 +124,18 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/login",
-        { username: loginUsername.trim(), password: loginPassword }
-      );
+      const data = await postJson<
+        ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr
+      >("/api/login", { username: loginUsername.trim(), password: loginPassword });
 
-      if (!isObject(data) || data.ok !== true) {
+      if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
+      }
+
+      // ✅ Token MUSS mitkommen
+      const token = (data as any).token;
+      if (!token) {
+        throw new Error("Login ok, aber kein token vom Server erhalten.");
       }
 
       // privateKey aus localStorage holen oder neu generieren
@@ -149,7 +154,13 @@ export default function WelcomePage() {
         privateKey = kp.privateKey;
       }
 
-      const userProfile = { ...data.user, privateKey };
+      // ✅ WICHTIG: token speichern, sonst gehen WS + Suche nicht
+      const userProfile = { ...(data as any).user, privateKey, token };
+
+      // ✅ localStorage für WebSocket + API
+      localStorage.setItem("user", JSON.stringify(userProfile));
+
+      // ✅ optional: Backup-System
       profileProtection.storeProfile(userProfile);
 
       toast({ title: t("welcomeBack"), description: t("loginSuccess") });
@@ -197,16 +208,27 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/register",
-        { username: finalUsername, password: registerPassword, publicKey }
-      );
+      const data = await postJson<
+        ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr
+      >("/api/register", { username: finalUsername, password: registerPassword, publicKey });
 
-      if (!isObject(data) || data.ok !== true) {
+      if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
       }
 
-      const userProfile = { ...data.user, privateKey };
+      // ✅ Token MUSS mitkommen
+      const token = (data as any).token;
+      if (!token) {
+        throw new Error("Registrierung ok, aber kein token vom Server erhalten.");
+      }
+
+      // ✅ WICHTIG: token speichern, sonst gehen WS + Suche nicht
+      const userProfile = { ...(data as any).user, privateKey, token };
+
+      // ✅ localStorage für WebSocket + API
+      localStorage.setItem("user", JSON.stringify(userProfile));
+
+      // ✅ optional: Backup-System
       profileProtection.storeProfile(userProfile);
 
       toast({ title: t("welcomeToWhispergram"), description: t("accountCreated") });
@@ -225,9 +247,15 @@ export default function WelcomePage() {
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img src={logoPath} alt="Whispergram Logo" className="w-full h-full object-cover rounded-xl" />
+            <img
+              src={logoPath}
+              alt="Whispergram Logo"
+              className="w-full h-full object-cover rounded-xl"
+            />
           </div>
-          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
+          <p className="text-text-muted text-base sm:text-lg px-2">
+            {t("welcomeDescription")}
+          </p>
         </div>
 
         <div className="flex justify-center mb-4 sm:mb-8">
@@ -252,7 +280,9 @@ export default function WelcomePage() {
                 </TabsList>
 
                 <TabsContent value="register" className="space-y-4">
-                  <h3 className="text-lg font-semibold text-foreground">{t("createAccount")}</h3>
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {t("createAccount")}
+                  </h3>
                   <div className="space-y-3">
                     <Input
                       placeholder={t("enterUsername")}
@@ -267,7 +297,9 @@ export default function WelcomePage() {
                       onChange={(e) => setRegisterPassword(e.target.value)}
                       className="bg-gray-800 border-border text-white placeholder:text-gray-400"
                     />
-                    <p className="text-sm text-muted-foreground">{t("chooseUsernameHint")}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {t("chooseUsernameHint")}
+                    </p>
                   </div>
 
                   <Button
@@ -313,17 +345,23 @@ export default function WelcomePage() {
           </Card>
         </div>
 
-        {/* Features (unverändert) */}
+        {/* Features */}
         <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
+          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">
+            {t("features")}
+          </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <Shield className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t("endToEndEncryption")}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t("encryptionEnabled")}</p>
+                <h4 className="font-semibold text-foreground mb-2">
+                  {t("endToEndEncryption")}
+                </h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  {t("encryptionEnabled")}
+                </p>
               </CardContent>
             </Card>
 
@@ -332,8 +370,12 @@ export default function WelcomePage() {
                 <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <EyeOff className="w-6 h-6 text-primary" />
                 </div>
-                <h4 className="font-semibold text-foreground mb-2">{t("anonymousAccess")}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t("noPhoneRequired")}</p>
+                <h4 className="font-semibold text-foreground mb-2">
+                  {t("anonymousAccess")}
+                </h4>
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  {t("noPhoneRequired")}
+                </p>
               </CardContent>
             </Card>
 
@@ -343,7 +385,9 @@ export default function WelcomePage() {
                   <Clock className="w-6 h-6 text-primary" />
                 </div>
                 <h4 className="font-semibold text-foreground mb-2">{t("autoDestruct")}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t("selfDestructing")}</p>
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  {t("selfDestructing")}
+                </p>
               </CardContent>
             </Card>
 
@@ -353,7 +397,9 @@ export default function WelcomePage() {
                   <Database className="w-6 h-6 text-primary" />
                 </div>
                 <h4 className="font-semibold text-foreground mb-2">{t("zeroStorage")}</h4>
-                <p className="text-muted-foreground text-sm leading-relaxed">{t("zeroDataRetention")}</p>
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  {t("zeroDataRetention")}
+                </p>
               </CardContent>
             </Card>
           </div>
@@ -365,11 +411,17 @@ export default function WelcomePage() {
             <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
           <div className="flex flex-col sm:flex-row justify-center items-center space-y-2 sm:space-y-0 sm:space-x-6">
-            <button onClick={() => setLocation("/faq")} className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
+            <button
+              onClick={() => setLocation("/faq")}
+              className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
+            >
               {t("frequentlyAskedQuestions")}
             </button>
             <div className="hidden sm:block w-1 h-1 bg-muted-foreground rounded-full"></div>
-            <button onClick={() => setLocation("/imprint")} className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
+            <button
+              onClick={() => setLocation("/imprint")}
+              className="text-primary hover:text-primary/80 text-sm font-medium transition-colors"
+            >
               {t("imprint")}
             </button>
           </div>
