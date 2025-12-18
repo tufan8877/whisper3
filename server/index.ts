@@ -3,36 +3,56 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
+
+/**
+ * ✅ HARD FAIL wenn wichtige ENV fehlt
+ * Sonst bekommst du später "secretOrPrivateKey must have a value"
+ */
+const REQUIRED_ENVS = ["DATABASE_URL", "JWT_SECRET"] as const;
+for (const k of REQUIRED_ENVS) {
+  if (!process.env[k] || String(process.env[k]).trim() === "") {
+    throw new Error(`Missing environment variable: ${k}`);
+  }
+}
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// ✅ CORS (Production: nur deine Render-Domain, Dev: offen)
+/**
+ * ✅ CORS (korrekt für credentials: "include")
+ * - Kein "*", wenn Cookies/Sessions/JWT-Cookies genutzt werden
+ * - Allow-Credentials muss true sein
+ */
 app.use((req, res, next) => {
-  const allowedOrigin =
-    process.env.NODE_ENV === "production"
-      ? "https://whisper3.onrender.com"
-      : "*";
+  const origin = req.headers.origin;
 
-  res.header("Access-Control-Allow-Origin", allowedOrigin);
+  const allowedOrigins = new Set([
+    "https://whisper3.onrender.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ]);
+
+  if (origin && allowedOrigins.has(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
+
   res.header("Vary", "Origin");
+  res.header("Access-Control-Allow-Credentials", "true");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, Sec-WebSocket-Protocol, Sec-WebSocket-Key, Sec-WebSocket-Version, Connection, Upgrade"
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
   );
 
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-
+  if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
-// ✅ API-GUARD: verhindert, dass /api/* jemals in SPA/Vite-Fallback landet
-// und gibt bei kaputten URLs sauber JSON zurück.
+/**
+ * ✅ API-GUARD: verhindert, dass /api/* jemals in SPA/Vite-Fallback landet
+ * und gibt bei kaputten URLs sauber JSON zurück.
+ */
 app.use("/api", (req, res, next) => {
-  // req.originalUrl ist am verlässlichsten bei Express
   const u = req.originalUrl || req.url || "";
   if (!u || u.includes("undefined") || u.includes("[object Object]")) {
     console.error("❌ Invalid API URL:", u);
@@ -41,26 +61,26 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
-// ✅ Logger
+/**
+ * ✅ Logger
+ */
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+  let capturedJsonResponse: Record<string, any> | undefined;
 
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
+  const originalResJson = res.json.bind(res);
+  res.json = function (bodyJson: any, ...args: any[]) {
     capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
+    return originalResJson(bodyJson, ...args);
+  } as any;
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-      if (logLine.length > 80) logLine = logLine.slice(0, 79) + "…";
+      if (capturedJsonResponse) logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      if (logLine.length > 180) logLine = logLine.slice(0, 179) + "…";
       log(logLine);
     }
   });
@@ -69,7 +89,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // ✅ Register API routes FIRST before Vite middleware
+  // ✅ Register API routes FIRST
   const server = await registerRoutes(app);
 
   // ✅ Error handling middleware (immer JSON für /api)
@@ -77,12 +97,13 @@ app.use((req, res, next) => {
     const status = err?.status || err?.statusCode || 500;
     const message = err?.message || "Internal Server Error";
 
+    console.error("❌ SERVER ERROR:", err);
+
     if (req.path?.startsWith("/api")) {
-      res.status(status).json({ ok: false, message });
-      return;
+      return res.status(status).json({ ok: false, message });
     }
 
-    res.status(status).json({ message });
+    return res.status(status).json({ message });
   });
 
   // ✅ Setup Vite AFTER all API routes are registered
@@ -92,10 +113,7 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // Render: dynamischer Port; lokal fallback 5000
   const port = Number(process.env.PORT) || 5000;
-
-  // Windows-friendly: lokal 127.0.0.1, production (Render) 0.0.0.0
   const host = app.get("env") === "development" ? "127.0.0.1" : "0.0.0.0";
 
   server.listen(port, host, () => {
