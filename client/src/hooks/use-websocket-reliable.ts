@@ -2,13 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 function getAuthToken(): string | null {
   try {
-    // Optional: falls du irgendwo token direkt speicherst
-    const direct = localStorage.getItem("token");
-    if (direct) return direct;
-
     const raw = localStorage.getItem("user");
     if (!raw) return null;
-
     const u = JSON.parse(raw);
     return u?.token || u?.accessToken || null;
   } catch {
@@ -16,33 +11,22 @@ function getAuthToken(): string | null {
   }
 }
 
-export function useWebSocketReliable() {
+export function useWebSocketReliable(userId?: number) {
   const [isConnected, setIsConnected] = useState(false);
-
   const wsRef = useRef<WebSocket | null>(null);
   const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<any>(null);
   const messageQueueRef = useRef<any[]>([]);
-  const manualCloseRef = useRef(false);
-
-  const emit = useCallback((event: string, data?: any) => {
-    const handlers = eventHandlersRef.current.get(event) || [];
-    handlers.forEach((h) => {
-      try {
-        h(data);
-      } catch (e) {
-        console.error(`❌ WS handler failed for event "${event}":`, e);
-      }
-    });
-  }, []);
 
   const connect = useCallback(() => {
-    // falls wir absichtlich schließen (unmount)
-    if (manualCloseRef.current) return;
+    if (!userId) {
+      console.log("❌ No userId provided for WebSocket connection");
+      return;
+    }
 
     const token = getAuthToken();
     if (!token) {
-      console.log("❌ No JWT token found. WebSocket will not connect until login/register stores token.");
+      console.log("❌ No token in localStorage -> cannot join websocket");
       setIsConnected(false);
       return;
     }
@@ -51,12 +35,7 @@ export function useWebSocketReliable() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-      console.log("🔌 Connecting to WebSocket:", wsUrl);
-
-      // alte Verbindung sauber schließen
-      try {
-        wsRef.current?.close();
-      } catch {}
+      console.log("🔌 Connecting to WebSocket:", wsUrl, "user:", userId);
 
       wsRef.current = new WebSocket(wsUrl);
 
@@ -64,91 +43,74 @@ export function useWebSocketReliable() {
         console.log("✅ WebSocket connected");
         setIsConnected(true);
 
-        // ✅ NEW JOIN: server expects token
+        // ✅ WICHTIG: Server erwartet token, NICHT userId
         const joinMessage = { type: "join", token };
         wsRef.current?.send(JSON.stringify(joinMessage));
-        console.log("📤 Join message sent (token)");
+        console.log("📤 Join sent (token)");
 
-        // queued messages senden
+        // Send queued messages
         while (messageQueueRef.current.length > 0) {
           const queued = messageQueueRef.current.shift();
           wsRef.current?.send(JSON.stringify(queued));
-          console.log("📤 Sent queued message");
         }
-
-        emit("connected");
       };
 
       wsRef.current.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
 
-          // 1) spezifisches event (z.B. "new_message", "typing", "message_sent")
-          if (data?.type) emit(data.type, data);
+          // Erst general handler
+          const msgHandlers = eventHandlersRef.current.get("message") || [];
+          msgHandlers.forEach((h) => h(data));
 
-          // 2) generisches event
-          emit("message", data);
-        } catch (error) {
-          console.error("❌ Failed to parse WebSocket message:", error, "RAW:", event.data);
+          // Dann typed handler
+          if (data?.type) {
+            const handlers = eventHandlersRef.current.get(data.type) || [];
+            handlers.forEach((h) => h(data));
+          }
+        } catch (err) {
+          console.error("❌ Failed to parse WebSocket message:", err);
         }
       };
 
       wsRef.current.onclose = (event) => {
         console.log("🔌 WebSocket closed:", event.code, event.reason);
         setIsConnected(false);
-        emit("disconnected");
 
-        // Auto-reconnect (nur wenn nicht manuell geschlossen)
-        if (!manualCloseRef.current) {
-          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("🔄 Attempting to reconnect...");
-            connect();
-          }, 3000);
-        }
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          console.log("🔄 Reconnecting WS...");
+          connect();
+        }, 3000);
       };
 
       wsRef.current.onerror = (error) => {
         console.error("❌ WebSocket error:", error);
         setIsConnected(false);
-        emit("error", error);
       };
     } catch (error) {
       console.error("❌ Failed to create WebSocket:", error);
       setIsConnected(false);
     }
-  }, [emit]);
+  }, [userId]);
 
   useEffect(() => {
-    manualCloseRef.current = false;
     connect();
-
     return () => {
-      manualCloseRef.current = true;
-
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       try {
         wsRef.current?.close();
       } catch {}
-
       wsRef.current = null;
     };
   }, [connect]);
 
   const send = useCallback((message: any) => {
-    const ws = wsRef.current;
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
       return true;
     }
-
-    // nicht ready -> queue
+    // queue while disconnected
     messageQueueRef.current.push(message);
     return false;
   }, []);
@@ -161,20 +123,14 @@ export function useWebSocketReliable() {
 
   const off = useCallback((event: string, handler?: Function) => {
     if (!handler) {
-      eventHandlersRef.current.delete(event);
+      eventHandlersRef.current.set(event, []);
       return;
     }
-
     const handlers = eventHandlersRef.current.get(event) || [];
-    const next = handlers.filter((h) => h !== handler);
-    if (next.length === 0) eventHandlersRef.current.delete(event);
-    else eventHandlersRef.current.set(event, next);
+    const idx = handlers.indexOf(handler);
+    if (idx > -1) handlers.splice(idx, 1);
+    eventHandlersRef.current.set(event, handlers);
   }, []);
 
-  return {
-    isConnected,
-    send,
-    on,
-    off,
-  };
+  return { isConnected, send, on, off };
 }
