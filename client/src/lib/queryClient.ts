@@ -28,12 +28,42 @@ async function throwIfResNotOk(res: Response) {
 function normalizePath(url: string) {
   if (!url) return "/";
 
-  // If it already starts with http(s), keep it
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-
-  // Ensure leading slash for relative calls
   if (!url.startsWith("/")) return `/${url}`;
   return url;
+}
+
+/** ✅ Token aus localStorage holen (passt für token oder accessToken) */
+function getAuthToken(): string | null {
+  try {
+    const raw = localStorage.getItem("user");
+    if (!raw) return null;
+    const u = JSON.parse(raw);
+    return u?.token || u?.accessToken || null;
+  } catch {
+    return null;
+  }
+}
+
+/** ✅ Authorization Header bauen */
+function withAuthHeaders(extra?: HeadersInit): HeadersInit {
+  const token = getAuthToken();
+  const base: Record<string, string> = {};
+
+  if (token) base["Authorization"] = `Bearer ${token}`;
+
+  // extra kann object / array / Headers sein -> wir mergen sauber
+  if (!extra) return base;
+
+  // Wenn extra schon ein plain object ist
+  if (typeof extra === "object" && !(extra instanceof Headers) && !Array.isArray(extra)) {
+    return { ...base, ...(extra as Record<string, string>) };
+  }
+
+  // Falls Headers oder Array-Tuples:
+  const h = new Headers(extra);
+  Object.entries(base).forEach(([k, v]) => h.set(k, v));
+  return h;
 }
 
 /**
@@ -42,25 +72,29 @@ function normalizePath(url: string) {
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown,
+  data?: unknown
 ): Promise<Response> {
   const safeUrl = normalizePath(url);
 
+  const headers: HeadersInit = data
+    ? withAuthHeaders({ "Content-Type": "application/json" })
+    : withAuthHeaders();
+
   const res = await fetch(safeUrl, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: data ? JSON.stringify(data) : undefined,
+    // Wenn du Sessions NICHT mehr brauchst, kannst du credentials entfernen.
+    // Aber lassen wir es erstmal drin – schadet nicht.
     credentials: "include",
   });
 
-  // Don’t read body twice; just throw with body once if needed
   await throwIfResNotOk(res);
   return res;
 }
 
 /**
- * ✅ New helper you asked for: postJson
- * Returns parsed JSON and throws clean errors.
+ * ✅ postJson: Returns parsed JSON and throws clean errors.
  */
 export async function postJson<TResponse = any>(
   url: string,
@@ -71,10 +105,10 @@ export async function postJson<TResponse = any>(
 
   const res = await fetch(safeUrl, {
     method: "POST",
-    headers: {
+    headers: withAuthHeaders({
       "Content-Type": "application/json",
       ...(init?.headers || {}),
-    },
+    }),
     body: data !== undefined ? JSON.stringify(data) : undefined,
     credentials: "include",
     ...init,
@@ -85,14 +119,12 @@ export async function postJson<TResponse = any>(
     throw new Error(`${res.status}: ${body}`);
   }
 
-  // In case server responds with empty body
   const txt = await res.text();
   if (!txt) return {} as TResponse;
 
   try {
     return JSON.parse(txt) as TResponse;
   } catch {
-    // If backend returns non-json, still return text as any
     return { raw: txt } as any;
   }
 }
@@ -106,7 +138,10 @@ export const getQueryFn: <T>(options: {
   async ({ queryKey }) => {
     const url = normalizePath(queryKey[0] as string);
 
-    const res = await fetch(url, { credentials: "include" });
+    const res = await fetch(url, {
+      credentials: "include",
+      headers: withAuthHeaders(),
+    });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null as any;
