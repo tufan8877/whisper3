@@ -1,164 +1,180 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from "react";
 
-export function useWebSocketReliable(userId?: number) {
+function getAuthToken(): string | null {
+  try {
+    // Optional: falls du irgendwo token direkt speicherst
+    const direct = localStorage.getItem("token");
+    if (direct) return direct;
+
+    const raw = localStorage.getItem("user");
+    if (!raw) return null;
+
+    const u = JSON.parse(raw);
+    return u?.token || u?.accessToken || null;
+  } catch {
+    return null;
+  }
+}
+
+export function useWebSocketReliable() {
   const [isConnected, setIsConnected] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageQueueRef = useRef<any[]>([]);
+  const manualCloseRef = useRef(false);
+
+  const emit = useCallback((event: string, data?: any) => {
+    const handlers = eventHandlersRef.current.get(event) || [];
+    handlers.forEach((h) => {
+      try {
+        h(data);
+      } catch (e) {
+        console.error(`❌ WS handler failed for event "${event}":`, e);
+      }
+    });
+  }, []);
 
   const connect = useCallback(() => {
-    if (!userId) {
-      console.log('❌ No userId provided for WebSocket connection');
+    // falls wir absichtlich schließen (unmount)
+    if (manualCloseRef.current) return;
+
+    const token = getAuthToken();
+    if (!token) {
+      console.log("❌ No JWT token found. WebSocket will not connect until login/register stores token.");
+      setIsConnected(false);
       return;
     }
 
     try {
-      // Fix WebSocket URL for Replit environment
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws`;
-      
-      console.log("🔌 Connecting to WebSocket:", wsUrl, "for user:", userId);
-      
+
+      console.log("🔌 Connecting to WebSocket:", wsUrl);
+
+      // alte Verbindung sauber schließen
+      try {
+        wsRef.current?.close();
+      } catch {}
+
       wsRef.current = new WebSocket(wsUrl);
 
       wsRef.current.onopen = () => {
         console.log("✅ WebSocket connected");
         setIsConnected(true);
-        
-        // Send join message
-        const joinMessage = { type: "join", userId };
-        wsRef.current?.send(JSON.stringify(joinMessage));
-        console.log("📤 Join message sent for user:", userId);
 
-        // Send queued messages
+        // ✅ NEW JOIN: server expects token
+        const joinMessage = { type: "join", token };
+        wsRef.current?.send(JSON.stringify(joinMessage));
+        console.log("📤 Join message sent (token)");
+
+        // queued messages senden
         while (messageQueueRef.current.length > 0) {
-          const queuedMessage = messageQueueRef.current.shift();
-          wsRef.current?.send(JSON.stringify(queuedMessage));
+          const queued = messageQueueRef.current.shift();
+          wsRef.current?.send(JSON.stringify(queued));
           console.log("📤 Sent queued message");
         }
+
+        emit("connected");
       };
 
       wsRef.current.onmessage = (event) => {
-        console.log("📥 WebSocket RAW received:", event.data);
-        
         try {
           const data = JSON.parse(event.data);
-          console.log("📥 WebSocket PARSED:", data.type, data);
-          
-          // Special mobile handling for new messages
-          if (data.type === 'new_message') {
-            console.log('📱 MOBILE: New message detected, triggering UI updates');
-            
-            // Force page visibility for mobile browsers
-            if (document.hidden) {
-              console.log('📱 MOBILE: Document hidden, forcing visibility event');
-              document.dispatchEvent(new Event('visibilitychange'));
-            }
-            
-            // Force focus event for mobile refresh
-            window.dispatchEvent(new Event('focus'));
-          }
-          
-          // Notify all message handlers
-          const messageHandlers = eventHandlersRef.current.get('message') || [];
-          console.log(`📡 Broadcasting to ${messageHandlers.length} handlers`);
-          
-          if (messageHandlers.length === 0) {
-            console.log("⚠️ NO MESSAGE HANDLERS REGISTERED!");
-          }
-          
-          messageHandlers.forEach((handler, index) => {
-            try {
-              console.log(`🔄 Calling handler ${index}...`);
-              handler(data);
-              console.log(`✅ Handler ${index} executed successfully`);
-            } catch (error) {
-              console.error(`❌ Handler ${index} failed:`, error);
-            }
-          });
-          
+
+          // 1) spezifisches event (z.B. "new_message", "typing", "message_sent")
+          if (data?.type) emit(data.type, data);
+
+          // 2) generisches event
+          emit("message", data);
         } catch (error) {
-          console.error("❌ Failed to parse WebSocket message:", error);
+          console.error("❌ Failed to parse WebSocket message:", error, "RAW:", event.data);
         }
       };
 
       wsRef.current.onclose = (event) => {
         console.log("🔌 WebSocket closed:", event.code, event.reason);
-        console.log("🔌 Was connected to:", wsUrl);
         setIsConnected(false);
-        
-        // Auto-reconnect after 3 seconds
-        reconnectTimeoutRef.current = setTimeout(() => {
-          console.log("🔄 Attempting to reconnect...");
-          connect();
-        }, 3000);
+        emit("disconnected");
+
+        // Auto-reconnect (nur wenn nicht manuell geschlossen)
+        if (!manualCloseRef.current) {
+          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log("🔄 Attempting to reconnect...");
+            connect();
+          }, 3000);
+        }
       };
 
       wsRef.current.onerror = (error) => {
         console.error("❌ WebSocket error:", error);
-        console.error("❌ WebSocket URL was:", wsUrl);
-        console.error("❌ Current location:", window.location.href);
         setIsConnected(false);
+        emit("error", error);
       };
-
     } catch (error) {
       console.error("❌ Failed to create WebSocket:", error);
+      setIsConnected(false);
     }
-  }, [userId]);
+  }, [emit]);
 
   useEffect(() => {
+    manualCloseRef.current = false;
     connect();
-    
+
     return () => {
+      manualCloseRef.current = true;
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+
+      try {
+        wsRef.current?.close();
+      } catch {}
+
+      wsRef.current = null;
     };
   }, [connect]);
 
   const send = useCallback((message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
-      wsRef.current.send(messageStr);
-      console.log("📤 Message sent via WebSocket:", typeof message === 'string' ? 'raw' : message.type);
+    const ws = wsRef.current;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
       return true;
-    } else {
-      console.log("❌ WebSocket not ready, queueing message");
-      messageQueueRef.current.push(message);
-      return false;
     }
+
+    // nicht ready -> queue
+    messageQueueRef.current.push(message);
+    return false;
   }, []);
 
   const on = useCallback((event: string, handler: Function) => {
     const handlers = eventHandlersRef.current.get(event) || [];
     handlers.push(handler);
     eventHandlersRef.current.set(event, handlers);
-    console.log(`📝 Registered handler for '${event}', total: ${handlers.length}`);
   }, []);
 
   const off = useCallback((event: string, handler?: Function) => {
-    if (handler) {
-      const handlers = eventHandlersRef.current.get(event) || [];
-      const index = handlers.indexOf(handler);
-      if (index > -1) {
-        handlers.splice(index, 1);
-        eventHandlersRef.current.set(event, handlers);
-        console.log(`📝 Removed specific handler for '${event}'`);
-      }
-    } else {
-      eventHandlersRef.current.set(event, []);
-      console.log(`📝 Removed all handlers for '${event}'`);
+    if (!handler) {
+      eventHandlersRef.current.delete(event);
+      return;
     }
+
+    const handlers = eventHandlersRef.current.get(event) || [];
+    const next = handlers.filter((h) => h !== handler);
+    if (next.length === 0) eventHandlersRef.current.delete(event);
+    else eventHandlersRef.current.set(event, next);
   }, []);
 
   return {
     isConnected,
     send,
     on,
-    off
+    off,
   };
 }
