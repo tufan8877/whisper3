@@ -10,41 +10,54 @@ export class WebSocketClient {
     this.connect();
   }
 
+  private getToken(): string | null {
+    try {
+      // du speicherst token meistens im localStorage als "token" oder im "user" objekt
+      const direct = localStorage.getItem("token");
+      if (direct) return direct;
+
+      const userRaw = localStorage.getItem("user");
+      if (!userRaw) return null;
+      const user = JSON.parse(userRaw);
+      return user?.token ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private connect() {
     try {
-      // Use current host for WebSocket connection in Replit environment
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws`;
-      
+
       console.log("🔌 ATTEMPTING WebSocket connection to:", wsUrl);
-      
+
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
         console.log("🟢 WebSocket connected successfully! User:", this.userId);
-        console.log("🟢 WebSocket readyState:", this.ws?.readyState, "OPEN should be:", WebSocket.OPEN);
         this.reconnectAttempts = 0;
-        
-        // Send join message immediately
-        const joinMessage = { type: "join", userId: this.userId };
+
+        const token = this.getToken();
+        if (!token) {
+          console.error("❌ No JWT token found in localStorage. Cannot JOIN websocket.");
+          // Optional: close connection to avoid server spam
+          try { this.ws?.close(1008, "Missing token"); } catch {}
+          return;
+        }
+
+        // ✅ NEW: join with token (server expects this)
+        const joinMessage = { type: "join", token };
         console.log("📤 Sending join message:", joinMessage);
         this.ws!.send(JSON.stringify(joinMessage));
-        
+
         this.emit("connected");
       };
 
       this.ws.onmessage = (event) => {
         try {
-          console.log("📥 Raw WebSocket message received:", event.data);
           const message = JSON.parse(event.data);
-          console.log("📥 Parsed WebSocket message:", message);
-          
-          // Emit specific event types
-          if (message.type) {
-            this.emit(message.type, message);
-          }
-          
-          // Also emit general message event
+          if (message.type) this.emit(message.type, message);
           this.emit("message", message);
         } catch (error) {
           console.error("Failed to parse WebSocket message:", error);
@@ -72,11 +85,7 @@ export class WebSocketClient {
   private attemptReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      console.log(`Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-      
-      setTimeout(() => {
-        this.connect();
-      }, this.reconnectInterval);
+      setTimeout(() => this.connect(), this.reconnectInterval);
     } else {
       console.error("Max reconnection attempts reached");
       this.emit("max_reconnect_attempts");
@@ -84,32 +93,15 @@ export class WebSocketClient {
   }
 
   send(message: any) {
-    console.log("🚀 WebSocket send() called with:", message);
-    
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const jsonMessage = JSON.stringify(message);
-      console.log("📤 WebSocket sending JSON:", jsonMessage);
-      this.ws.send(jsonMessage);
-      console.log("✅ WebSocket message sent successfully");
+      this.ws.send(JSON.stringify(message));
       return true;
-    } else {
-      console.log("❌ WebSocket not ready to send:", {
-        hasWs: !!this.ws,
-        readyState: this.ws?.readyState,
-        readyStateDescription: this.ws?.readyState === 0 ? "CONNECTING" : 
-                              this.ws?.readyState === 1 ? "OPEN" : 
-                              this.ws?.readyState === 2 ? "CLOSING" : 
-                              this.ws?.readyState === 3 ? "CLOSED" : "UNKNOWN",
-        OPEN: WebSocket.OPEN
-      });
-      return false;
     }
+    return false;
   }
 
   on(event: string, handler: Function) {
-    if (!this.eventHandlers.has(event)) {
-      this.eventHandlers.set(event, []);
-    }
+    if (!this.eventHandlers.has(event)) this.eventHandlers.set(event, []);
     this.eventHandlers.get(event)!.push(handler);
   }
 
@@ -118,21 +110,15 @@ export class WebSocketClient {
       this.eventHandlers.delete(event);
       return;
     }
-
     const handlers = this.eventHandlers.get(event);
-    if (handlers) {
-      const index = handlers.indexOf(handler);
-      if (index > -1) {
-        handlers.splice(index, 1);
-      }
-    }
+    if (!handlers) return;
+    const index = handlers.indexOf(handler);
+    if (index > -1) handlers.splice(index, 1);
   }
 
   private emit(event: string, data?: any) {
     const handlers = this.eventHandlers.get(event);
-    if (handlers) {
-      handlers.forEach(handler => handler(data));
-    }
+    if (handlers) handlers.forEach((handler) => handler(data));
   }
 
   disconnect() {
