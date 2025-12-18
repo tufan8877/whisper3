@@ -55,8 +55,9 @@ export default function ChatPage() {
     initializeUser();
   }, [setLocation]);
 
-  // WebSocket + Chats
-  const socket = useWebSocketReliable(currentUser?.id);
+  // ✅ WebSocket + Chats
+  // WICHTIG: Hook OHNE userId aufrufen, weil JOIN jetzt über JWT token läuft
+  const socket = useWebSocketReliable();
 
   const {
     persistentContacts: chats,
