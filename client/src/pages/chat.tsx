@@ -9,17 +9,13 @@ import { usePersistentChats } from "@/hooks/use-persistent-chats";
 import { queryClient } from "@/lib/queryClient";
 import type { User } from "@shared/schema";
 
-// Optional (wenn du es wirklich verwendest, sonst kannst du es löschen)
-// import { debugEncryptionKeys, testEncryptionRoundtrip } from "@/lib/crypto-debug";
-// import { repairEncryptionIssues } from "@/lib/crypto-repair";
-
 export default function ChatPage() {
   const [, setLocation] = useLocation();
   const [showSettings, setShowSettings] = useState(false);
 
-  // User aus localStorage (Wickr-Me Style)
+  // User aus localStorage
   const [currentUser, setCurrentUser] = useState<
-    (User & { privateKey: string }) | null
+    (User & { privateKey: string; token?: string; accessToken?: string }) | null
   >(null);
 
   // User nur einmal beim Mount laden
@@ -32,8 +28,8 @@ export default function ChatPage() {
         const { profileProtection } = await import("@/lib/profile-protection");
         const recovered = profileProtection.retrieveProfile();
         if (recovered) {
-          setCurrentUser(recovered);
-          console.log("✅ Profile recovered from backup storage:", recovered.username);
+          setCurrentUser(recovered as any);
+          console.log("✅ Profile recovered from backup storage:", (recovered as any).username);
           return;
         }
         console.log("⚠️ No user profile found, redirecting to login");
@@ -44,6 +40,14 @@ export default function ChatPage() {
       try {
         const user = JSON.parse(userData);
         console.log("👤 Loaded user from localStorage:", user.username, "ID:", user.id);
+
+        // Minimal sanity check
+        if (!user?.id || !user?.username) {
+          console.log("⚠️ user object missing id/username, redirecting");
+          setLocation("/");
+          return;
+        }
+
         setCurrentUser(user);
       } catch (error) {
         console.error("Failed to parse user data:", error);
@@ -55,9 +59,8 @@ export default function ChatPage() {
     initializeUser();
   }, [setLocation]);
 
-  // ✅ WebSocket + Chats
-  // WICHTIG: Hook OHNE userId aufrufen, weil JOIN jetzt über JWT token läuft
-  const socket = useWebSocketReliable();
+  // WebSocket + Chats
+  const socket = useWebSocketReliable(currentUser?.id);
 
   const {
     persistentContacts: chats,
@@ -78,7 +81,7 @@ export default function ChatPage() {
       messagesCount: messages?.length || 0,
       selectedChatId: selectedChat?.id,
       isConnected: socket?.isConnected,
-      chatsWithUnreadCounts: chats?.map((c: any) => ({
+      chatsWithUnreadCounts: (chats as any)?.map((c: any) => ({
         id: c.id,
         otherUser: c.otherUser?.username,
         unreadCount: c.unreadCount,
@@ -86,7 +89,7 @@ export default function ChatPage() {
     });
   }, [currentUser?.id, chats, messages, selectedChat, socket]);
 
-  // Aggressive mobile refresh (wie bei dir)
+  // Aggressive mobile refresh
   useEffect(() => {
     if (!currentUser?.id) return;
 
@@ -114,11 +117,11 @@ export default function ChatPage() {
     });
   }, [currentUser, socket]);
 
-  // Senden (deine Logik beibehalten)
+  // ✅ Senden (FIX: destructTimer in SEKUNDEN lassen!)
   const handleSendMessage = (
     content: string,
     type: string,
-    destructTimer: number,
+    destructTimer: number, // UI liefert Sekunden
     file?: File
   ) => {
     console.log("📤 NEUE NACHRICHT:", {
@@ -140,13 +143,13 @@ export default function ChatPage() {
       return;
     }
 
-    // Achtung: dein Hook erwartet offenbar ms → du machst das richtig
-    const destructTimerMs = Math.max(destructTimer * 1000, 5000);
-    console.log(
-      `⏰ SELBSTLÖSCHUNG in ${destructTimer}s konfiguriert (Chat-Kanal bleibt bestehen)`
-    );
+    // ✅ Hook useChat erwartet Sekunden (dein Hook normalisiert selbst)
+    const safeSeconds = Math.max(Number(destructTimer) || 5, 5);
 
-    sendMessage(content, type, destructTimerMs, file);
+    console.log(`⏰ Selbstlöschung in ${safeSeconds}s`);
+
+    // ✅ usePersistentChats / useChat Signatur: sendMessage(content, type, seconds, receiverId, file?)
+    sendMessage(content, type, safeSeconds, selectedChat.otherUser.id, file);
   };
 
   if (!currentUser) {
@@ -161,9 +164,8 @@ export default function ChatPage() {
   }
 
   return (
-    // ✅ WICHTIG: overflow-x-hidden + w-full + max-w-full (verhindert seitliches Ziehen)
     <div className="min-h-screen w-full max-w-full overflow-x-hidden flex flex-col md:flex-row bg-background chat-container">
-      {/* ✅ Sidebar Wrapper: w-full für mobile, fixe Breite ab md, min-w-0 fix gegen overflow */}
+      {/* Sidebar */}
       <div
         className={`${
           selectedChat ? "hidden md:flex" : "flex"
@@ -174,9 +176,9 @@ export default function ChatPage() {
           chats={chats as any}
           selectedChat={selectedChat}
           onSelectChat={(chat: any) => {
-            console.log(`💬 WHATSAPP-CHAT: ${chat.otherUser.username} einzeln beigetreten`);
+            console.log(`💬 WHATSAPP-CHAT: ${chat?.otherUser?.username} beigetreten`);
             console.log("DEBUG: Selected chat object:", chat);
-            console.log("DEBUG: Chat unreadCount:", chat.unreadCount);
+            console.log("DEBUG: Chat unreadCount:", chat?.unreadCount);
             selectChat(chat);
           }}
           onOpenSettings={() => setShowSettings(true)}
@@ -190,7 +192,7 @@ export default function ChatPage() {
         />
       </div>
 
-      {/* ✅ Chat Wrapper: flex-1 + min-w-0 + chat-safe padding + overflow-x-hidden */}
+      {/* Chat */}
       <div
         className={`${
           selectedChat ? "flex" : "hidden md:flex"
@@ -203,18 +205,28 @@ export default function ChatPage() {
           onSendMessage={handleSendMessage}
           isConnected={socket?.isConnected || false}
           onBackToList={() => {
-            console.log("📱 MOBILE: Zurück zur Chat-Liste - nur ein Schritt");
+            console.log("📱 MOBILE: Zurück zur Chat-Liste");
             selectChat(null as any);
           }}
         />
       </div>
 
+      {/* Settings */}
       {showSettings && currentUser && (
         <SettingsModal
           currentUser={currentUser}
           onClose={() => setShowSettings(false)}
-          onUpdateUser={(user) => {
-            localStorage.setItem("user", JSON.stringify(user));
+          onUpdateUser={(userUpdate) => {
+            // ✅ FIX: Token nicht überschreiben! Merge mit bestehendem localStorage User
+            const existingRaw = localStorage.getItem("user");
+            let existing: any = {};
+            try {
+              existing = existingRaw ? JSON.parse(existingRaw) : {};
+            } catch {}
+
+            const merged = { ...existing, ...userUpdate };
+            localStorage.setItem("user", JSON.stringify(merged));
+            setCurrentUser(merged);
           }}
         />
       )}
