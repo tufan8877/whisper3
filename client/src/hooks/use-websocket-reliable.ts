@@ -13,41 +13,32 @@ function getToken(): string | null {
 
 export function useWebSocketReliable(userId?: number) {
   const [isConnected, setIsConnected] = useState(false);
-
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageQueueRef = useRef<any[]>([]);
   const joinedRef = useRef(false);
 
-  const cleanup = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (wsRef.current) {
+  const emit = useCallback((event: string, data?: any) => {
+    const handlers = eventHandlersRef.current.get(event) || [];
+    handlers.forEach((h) => {
       try {
-        wsRef.current.onopen = null;
-        wsRef.current.onmessage = null;
-        wsRef.current.onerror = null;
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      } catch {}
-      wsRef.current = null;
-    }
-    joinedRef.current = false;
-    setIsConnected(false);
+        h(data);
+      } catch (e) {
+        console.error(`❌ WS handler error (${event}):`, e);
+      }
+    });
   }, []);
 
   const connect = useCallback(() => {
     if (!userId) {
-      console.log("❌ WebSocket: no userId -> not connecting");
+      console.log("❌ No userId for WebSocket");
       return;
     }
 
     const token = getToken();
     if (!token) {
-      console.log("❌ WebSocket: Missing token in localStorage.user.token");
+      console.error("❌ No token found -> cannot join websocket");
       setIsConnected(false);
       return;
     }
@@ -56,97 +47,113 @@ export function useWebSocketReliable(userId?: number) {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-      console.log("🔌 WS connecting:", wsUrl, "userId:", userId);
+      console.log("🔌 Connecting WS:", wsUrl, "user:", userId);
 
+      // close old
+      try {
+        wsRef.current?.close();
+      } catch {}
+
+      joinedRef.current = false;
       wsRef.current = new WebSocket(wsUrl);
 
       wsRef.current.onopen = () => {
-        console.log("🟢 WS open");
+        console.log("✅ WS open");
         setIsConnected(true);
 
-        // ✅ JOIN mit TOKEN (Server erwartet token!)
-        const joinMsg = { type: "join", token };
-        console.log("📤 WS join:", joinMsg);
-        wsRef.current?.send(JSON.stringify(joinMsg));
+        // ✅ JOIN WITH TOKEN (SERVER EXPECTS THIS)
+        const joinMessage = { type: "join", token };
+        wsRef.current?.send(JSON.stringify(joinMessage));
+        console.log("📤 WS join sent (token)");
 
-        // queued messages senden
-        while (messageQueueRef.current.length > 0) {
-          const m = messageQueueRef.current.shift();
-          wsRef.current?.send(JSON.stringify(m));
-        }
+        // flush queue after join_confirmed (optional) but we can also flush immediately;
+        // server will ignore messages until join is done, so we wait for join_confirmed.
       };
 
       wsRef.current.onmessage = (event) => {
+        let data: any;
         try {
-          const data = JSON.parse(event.data);
-
-          // join bestätigt?
-          if (data?.type === "join_confirmed") {
-            joinedRef.current = true;
-            console.log("✅ WS join_confirmed:", data);
-          }
-
-          // 1) spezifisches event
-          if (data?.type) {
-            const handlers = eventHandlersRef.current.get(data.type) || [];
-            handlers.forEach((h) => {
-              try { h(data); } catch (e) { console.error(e); }
-            });
-          }
-
-          // 2) general message event
-          const msgHandlers = eventHandlersRef.current.get("message") || [];
-          msgHandlers.forEach((h) => {
-            try { h(data); } catch (e) { console.error(e); }
-          });
-        } catch (err) {
-          console.error("❌ WS parse error:", err);
+          data = JSON.parse(event.data);
+        } catch {
+          console.error("❌ WS invalid JSON:", event.data);
+          return;
         }
+
+        // mark joined
+        if (data?.type === "join_confirmed") {
+          joinedRef.current = true;
+          console.log("✅ WS joined confirmed:", data);
+
+          // Send queued messages now
+          while (messageQueueRef.current.length > 0) {
+            const msg = messageQueueRef.current.shift();
+            wsRef.current?.send(JSON.stringify(msg));
+            console.log("📤 WS sent queued message:", msg?.type || "unknown");
+          }
+        }
+
+        // emit typed + general
+        if (data?.type) emit(data.type, data);
+        emit("message", data);
       };
 
-      wsRef.current.onerror = (err) => {
-        console.error("❌ WS error:", err);
-        setIsConnected(false);
-      };
-
-      wsRef.current.onclose = (ev) => {
-        console.log("🔴 WS close:", ev.code, ev.reason);
+      wsRef.current.onclose = (event) => {
+        console.log("🔌 WS closed:", event.code, event.reason);
         setIsConnected(false);
         joinedRef.current = false;
+        emit("disconnected");
 
-        // reconnect
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = setTimeout(() => {
           console.log("🔄 WS reconnecting...");
           connect();
         }, 3000);
       };
-    } catch (err) {
-      console.error("❌ WS connect failed:", err);
+
+      wsRef.current.onerror = (err) => {
+        console.error("❌ WS error:", err);
+        setIsConnected(false);
+        emit("error", err);
+      };
+    } catch (e) {
+      console.error("❌ WS connect failed:", e);
       setIsConnected(false);
     }
-  }, [userId]);
+  }, [userId, emit]);
 
   useEffect(() => {
-    cleanup();
     connect();
-    return cleanup;
-  }, [connect, cleanup]);
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      try {
+        wsRef.current?.close();
+      } catch {}
+      wsRef.current = null;
+    };
+  }, [connect]);
 
   const send = useCallback((message: any) => {
-    // optional: wenn noch nicht joined, queue
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    // if not open or not joined => queue
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !joinedRef.current) {
+      console.log("⏳ WS not ready/joined -> queue message:", message?.type || "unknown");
       messageQueueRef.current.push(message);
       return false;
     }
-    wsRef.current.send(JSON.stringify(message));
-    return true;
+
+    try {
+      wsRef.current.send(JSON.stringify(message));
+      return true;
+    } catch (e) {
+      console.error("❌ WS send failed:", e);
+      messageQueueRef.current.push(message);
+      return false;
+    }
   }, []);
 
   const on = useCallback((event: string, handler: Function) => {
-    const list = eventHandlersRef.current.get(event) || [];
-    list.push(handler);
-    eventHandlersRef.current.set(event, list);
+    const handlers = eventHandlersRef.current.get(event) || [];
+    handlers.push(handler);
+    eventHandlersRef.current.set(event, handlers);
   }, []);
 
   const off = useCallback((event: string, handler?: Function) => {
@@ -154,10 +161,10 @@ export function useWebSocketReliable(userId?: number) {
       eventHandlersRef.current.delete(event);
       return;
     }
-    const list = eventHandlersRef.current.get(event) || [];
-    const idx = list.indexOf(handler);
-    if (idx >= 0) list.splice(idx, 1);
-    eventHandlersRef.current.set(event, list);
+    const handlers = eventHandlersRef.current.get(event) || [];
+    const idx = handlers.indexOf(handler);
+    if (idx >= 0) handlers.splice(idx, 1);
+    eventHandlersRef.current.set(event, handlers);
   }, []);
 
   return { isConnected, send, on, off };
