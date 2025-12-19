@@ -65,16 +65,26 @@ class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
+  /**
+   * ✅ FIX: Case-insensitive Username Lookup
+   * Damit "Max" == "max" beim Login funktioniert.
+   */
   async getUserByUsername(username: string): Promise<User | undefined> {
+    const u = String(username || "").trim();
+    if (!u) return undefined;
+
     const [user] = await db
       .select()
       .from(users)
-      .where(eq(users.username, username));
+      .where(sql`LOWER(${users.username}) = LOWER(${u})`);
+
     return user || undefined;
   }
 
   async createUser(user: InsertUser): Promise<User> {
-    const [created] = await db.insert(users).values(user).returning();
+    // ✅ stabil: trim username
+    const cleaned: any = { ...user, username: String((user as any).username || "").trim() };
+    const [created] = await db.insert(users).values(cleaned).returning();
     return created;
   }
 
@@ -103,10 +113,7 @@ class DatabaseStorage implements IStorage {
 
   async deleteExpiredMessages(): Promise<number> {
     const now = new Date();
-    const result: any = await db
-      .delete(messages)
-      .where(sql`${messages.expiresAt} < ${now}`);
-    // je nach driver: rowCount / changes
+    const result: any = await db.delete(messages).where(sql`${messages.expiresAt} < ${now}`);
     return (result?.rowCount ?? result?.changes ?? 0) as number;
   }
 
@@ -153,8 +160,7 @@ class DatabaseStorage implements IStorage {
       ...r.chat,
       otherUser: r.otherUser!,
       lastMessage: r.lastMessage ?? undefined,
-      unreadCount:
-        r.chat.participant1Id === userId ? r.chat.unreadCount1 : r.chat.unreadCount2,
+      unreadCount: r.chat.participant1Id === userId ? r.chat.unreadCount1 : r.chat.unreadCount2,
     }));
   }
 
@@ -188,10 +194,7 @@ class DatabaseStorage implements IStorage {
   async updateChatLastMessage(chatId: number, messageId: number): Promise<void> {
     await db
       .update(chats)
-      .set({
-        lastMessageId: messageId as any,
-        lastMessageTimestamp: new Date(),
-      } as any)
+      .set({ lastMessageId: messageId as any, lastMessageTimestamp: new Date() } as any)
       .where(eq(chats.id, chatId));
   }
 
@@ -227,15 +230,28 @@ class DatabaseStorage implements IStorage {
   // Search
   // --------------------
   async searchUsers(query: string, excludeId: number): Promise<User[]> {
+    const q = String(query || "").trim();
+    if (!q) return [];
+
     const validExcludeId = Number.isFinite(excludeId) ? excludeId : 0;
+
+    // ✅ Block-Filter: weder Leute anzeigen die du blockst, noch die dich blocken
+    const notBlocked = sql`NOT EXISTS (
+      SELECT 1 FROM ${blockedUsers} b
+      WHERE
+        (b.blocker_id = ${validExcludeId} AND b.blocked_id = ${users.id})
+        OR
+        (b.blocker_id = ${users.id} AND b.blocked_id = ${validExcludeId})
+    )`;
 
     return await db
       .select()
       .from(users)
       .where(
         and(
-          sql`${users.username} ILIKE ${"%" + query + "%"}`,
-          ne(users.id, validExcludeId)
+          sql`${users.username} ILIKE ${"%" + q + "%"}`,
+          ne(users.id, validExcludeId),
+          notBlocked
         )
       )
       .limit(10);
@@ -252,10 +268,7 @@ class DatabaseStorage implements IStorage {
   }
 
   async deleteChatForUser(userId: number, chatId: number): Promise<void> {
-    await db
-      .insert(deletedChats)
-      .values({ userId, chatId } as any)
-      .onConflictDoNothing();
+    await db.insert(deletedChats).values({ userId, chatId } as any).onConflictDoNothing();
   }
 
   async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
