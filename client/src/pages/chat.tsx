@@ -17,23 +17,28 @@ export default function ChatPage() {
 
   useEffect(() => {
     const initializeUser = async () => {
-      const userData = localStorage.getItem("user");
+      let userData = localStorage.getItem("user");
 
       if (!userData) {
+        console.log("🔍 WICKR-ME-RECOVERY: Searching for profile in backup locations...");
         const { profileProtection } = await import("@/lib/profile-protection");
         const recovered = profileProtection.retrieveProfile();
         if (recovered) {
           setCurrentUser(recovered);
+          console.log("✅ Profile recovered from backup storage:", recovered.username);
           return;
         }
+        console.log("⚠️ No user profile found, redirecting to login");
         setLocation("/");
         return;
       }
 
       try {
         const user = JSON.parse(userData);
+        console.log("👤 Loaded user from localStorage:", user.username, "ID:", user.id);
         setCurrentUser(user);
-      } catch {
+      } catch (error) {
+        console.error("Failed to parse user data:", error);
         setLocation("/");
       }
     };
@@ -52,31 +57,22 @@ export default function ChatPage() {
     selectedChat,
     loadPersistentContacts,
     unreadCounts,
-    deleteChat, // ✅ wichtig
+    deleteChat, // ✅ NEW
   } = usePersistentChats(currentUser?.id, socket);
 
   useEffect(() => {
-    if (!currentUser?.id) return;
+    console.log("Chat status:", {
+      user: currentUser?.username,
+      connected: socket?.isConnected,
+    });
+  }, [currentUser, socket]);
 
-    const isMobile =
-      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-
-    if (isMobile) {
-      const mobileRefreshInterval = setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
-        queryClient.refetchQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
-      }, 2000);
-
-      return () => clearInterval(mobileRefreshInterval);
-    }
-  }, [currentUser?.id]);
-
+  // ✅ destructTimer in SEKUNDEN
   const handleSendMessage = (content: string, type: string, destructTimer: number, file?: File) => {
     if (!currentUser?.id) {
       setLocation("/");
       return;
     }
-
     if (!selectedChat?.otherUser?.id) return;
 
     const destructTimerSec = Math.max(Number(destructTimer) || 0, 5);
@@ -96,11 +92,7 @@ export default function ChatPage() {
 
   return (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden flex flex-col md:flex-row bg-background chat-container">
-      <div
-        className={`${
-          selectedChat ? "hidden md:flex" : "flex"
-        } md:flex w-full md:w-[380px] min-w-0 max-w-full overflow-x-hidden`}
-      >
+      <div className={`${selectedChat ? "hidden md:flex" : "flex"} md:flex w-full md:w-[380px] min-w-0 max-w-full overflow-x-hidden`}>
         <WhatsAppSidebar
           currentUser={currentUser}
           chats={chats as any}
@@ -112,17 +104,12 @@ export default function ChatPage() {
           unreadCounts={unreadCounts}
           onRefreshChats={() => loadPersistentContacts()}
           onDeleteChat={async (chatId) => {
-            // ✅ Fix: nutzt Hook deleteChat -> cutoff + lokale messages sauber weg
-            await deleteChat(chatId);
+            await deleteChat(chatId); // ✅ Cutoff delete
           }}
         />
       </div>
 
-      <div
-        className={`${
-          selectedChat ? "flex" : "hidden md:flex"
-        } flex-1 min-w-0 w-full max-w-full overflow-x-hidden chat-safe`}
-      >
+      <div className={`${selectedChat ? "flex" : "hidden md:flex"} flex-1 min-w-0 w-full max-w-full overflow-x-hidden chat-safe`}>
         <ChatView
           currentUser={currentUser}
           selectedChat={selectedChat}
@@ -137,7 +124,9 @@ export default function ChatPage() {
         <SettingsModal
           currentUser={currentUser}
           onClose={() => setShowSettings(false)}
-          onUpdateUser={(user) => localStorage.setItem("user", JSON.stringify(user))}
+          onUpdateUser={(user) => {
+            localStorage.setItem("user", JSON.stringify(user));
+          }}
         />
       )}
 
