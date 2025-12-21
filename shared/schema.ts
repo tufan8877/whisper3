@@ -31,13 +31,12 @@ export const chats = pgTable("chats", {
   participant1Id: integer("participant1_id").notNull(),
   participant2Id: integer("participant2_id").notNull(),
   lastMessageId: integer("last_message_id"),
-  lastMessageTimestamp: timestamp("last_message_timestamp").defaultNow(), // For WhatsApp-style sorting
-  unreadCount1: integer("unread_count_1").notNull().default(0), // Unread count for participant1
-  unreadCount2: integer("unread_count_2").notNull().default(0), // Unread count for participant2
+  lastMessageTimestamp: timestamp("last_message_timestamp").defaultNow(),
+  unreadCount1: integer("unread_count_1").notNull().default(0),
+  unreadCount2: integer("unread_count_2").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// New table for blocked users
 export const blockedUsers = pgTable("blocked_users", {
   id: serial("id").primaryKey(),
   blockerId: integer("blocker_id").notNull(),
@@ -45,12 +44,11 @@ export const blockedUsers = pgTable("blocked_users", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// New table for deleted chats (user-specific)
 export const deletedChats = pgTable("deleted_chats", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   chatId: integer("chat_id").notNull(),
-  deletedAt: timestamp("deleted_at").defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at").defaultNow().notNull(), // ✅ cutoff time
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({
@@ -92,6 +90,7 @@ export const insertBlockedUserSchema = createInsertSchema(blockedUsers).pick({
 export const insertDeletedChatSchema = createInsertSchema(deletedChats).pick({
   userId: true,
   chatId: true,
+  deletedAt: true, // ✅ wichtig
 });
 
 export type User = typeof users.$inferSelect;
@@ -105,15 +104,18 @@ export type InsertBlockedUser = z.infer<typeof insertBlockedUserSchema>;
 export type DeletedChat = typeof deletedChats.$inferSelect;
 export type InsertDeletedChat = z.infer<typeof insertDeletedChatSchema>;
 
-// WebSocket message types
+/**
+ * ✅ WebSocket message types
+ * WICHTIG: join ist jetzt token-basiert (dein Server erwartet token)
+ */
 export const wsMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("join"),
-    userId: z.number(),
+    token: z.string().min(1),
   }),
   z.object({
     type: z.literal("message"),
-    chatId: z.number().nullable(), // Allow null for auto-creation
+    chatId: z.number().nullable(),
     senderId: z.number(),
     receiverId: z.number(),
     content: z.string(),
@@ -125,7 +127,8 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("typing"),
     chatId: z.number(),
-    userId: z.number(),
+    senderId: z.number(),
+    receiverId: z.number(),
     isTyping: z.boolean(),
   }),
   z.object({
