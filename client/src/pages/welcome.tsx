@@ -12,7 +12,9 @@ import { LanguageSelector } from "@/components/ui/language-selector";
 import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
-import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
+
+// ✅ NEUES LOGO:
+import logoPath from "@assets/VelumChat_Logo.PNG";
 
 type ApiOk<T> = { ok: true; token: string; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
@@ -125,10 +127,13 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/login", {
-        username: u,
-        password: loginPassword,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/login",
+        {
+          username: u,
+          password: loginPassword,
+        }
+      );
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
@@ -200,11 +205,14 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/register", {
-        username: finalUsername,
-        password: registerPassword,
-        publicKey,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/register",
+        {
+          username: finalUsername,
+          password: registerPassword,
+          publicKey,
+        }
+      );
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
@@ -232,7 +240,7 @@ export default function WelcomePage() {
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
           <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img src={logoPath} alt="Whispergram Logo" className="w-full h-full object-cover rounded-xl" />
+            <img src={logoPath} alt="VelumChat Logo" className="w-full h-full object-cover rounded-xl" />
           </div>
           <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
         </div>
