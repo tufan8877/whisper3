@@ -13,7 +13,8 @@ import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 
-import logoPath from "@assets/VelumChat_Logo.png";
+// ✅ WICHTIG: Case-sensitive auf Render (Linux)!
+import logoPath from "@assets/VelumChat_Logo.PNG";
 
 type ApiOk<T> = { ok: true; token: string; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
@@ -22,6 +23,9 @@ function isObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+/**
+ * ✅ postJson: relative URL + Timeout + klare Fehlermeldungen
+ */
 async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<T> {
   const url = path.startsWith("/") ? path : `/${path}`;
   const controller = new AbortController();
@@ -64,7 +68,10 @@ async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<
 
   if (json === null) {
     throw new Error(
-      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(0, 200)}`
+      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(
+        0,
+        200
+      )}`
     );
   }
 
@@ -120,15 +127,19 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/login", {
-        username: u,
-        password: loginPassword,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/login",
+        {
+          username: u,
+          password: loginPassword,
+        }
+      );
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
       }
 
+      // privateKey aus localStorage holen (falls schon vorhanden)
       const existing = localStorage.getItem("user");
       let privateKey = "";
 
@@ -139,6 +150,7 @@ export default function WelcomePage() {
         } catch {}
       }
 
+      // Wenn kein privateKey vorhanden: neu erzeugen
       if (!privateKey) {
         const kp = await generateKeyPair();
         privateKey = kp.privateKey;
@@ -147,6 +159,7 @@ export default function WelcomePage() {
       const token = (data as any).token;
       const userProfile = { ...(data as any).user, privateKey, token };
 
+      // ✅ token dauerhaft speichern
       profileProtection.storeProfile(userProfile);
       localStorage.setItem("user", JSON.stringify(userProfile));
 
@@ -192,11 +205,14 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/register", {
-        username: finalUsername,
-        password: registerPassword,
-        publicKey,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/register",
+        {
+          username: finalUsername,
+          password: registerPassword,
+          publicKey,
+        }
+      );
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
@@ -205,6 +221,7 @@ export default function WelcomePage() {
       const token = (data as any).token;
       const userProfile = { ...(data as any).user, privateKey, token };
 
+      // ✅ token dauerhaft speichern
       profileProtection.storeProfile(userProfile);
       localStorage.setItem("user", JSON.stringify(userProfile));
 
@@ -222,17 +239,18 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          {/* ✅ LOGO: größer */}
-          <div className="mx-auto h-52 w-52 sm:h-60 sm:w-60 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden">
+          {/* ✅ Logo: größer + OHNE hellblauen Hintergrund */}
+          <div className="mx-auto h-40 w-40 sm:h-48 sm:w-48 flex items-center justify-center mb-4 sm:mb-6 overflow-hidden">
             <img
               src={logoPath}
               alt="VelumChat Logo"
               className="w-full h-full object-contain"
-              draggable={false}
             />
           </div>
 
-          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
+          <p className="text-text-muted text-base sm:text-lg px-2">
+            {t("welcomeDescription")}
+          </p>
         </div>
 
         <div className="flex justify-center mb-4 sm:mb-8">
