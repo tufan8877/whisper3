@@ -34,10 +34,7 @@ interface WhatsAppSidebarProps {
   unreadCounts?: Map<number, number>;
   onRefreshChats?: () => void;
 
-  /**
-   * ✅ NEW: Wird aus usePersistentChats.deleteChat übergeben
-   * Muss beim Löschen aufgerufen werden, damit Cutoff + lokale Message-Clear passieren.
-   */
+  // ✅ NEU: damit ChatPage/Hook steuert, wie gelöscht wird
   onDeleteChat?: (chatId: number) => void | Promise<void>;
 }
 
@@ -78,39 +75,7 @@ export default function WhatsAppSidebar({
   const [showNewChatDialog, setShowNewChatDialog] = useState(false);
 
   const handleLogout = () => {
-    // Wickr-me style: keine Daten löschen, nur zurück
     window.location.href = "/";
-  };
-
-  /**
-   * ✅ Wichtig: Jetzt NICHT mehr selbst /api/chats/:id/delete callen,
-   * sondern onDeleteChat() aufrufen (setzt Cutoff, löscht local messages, ruft server delete).
-   */
-  const handleDeleteChat = async (chatId: number) => {
-    try {
-      if (onDeleteChat) {
-        await onDeleteChat(chatId);
-        return;
-      }
-
-      // Fallback: falls onDeleteChat nicht übergeben wurde, machen wir zumindest server delete
-      const res = await fetch(`/api/chats/${chatId}/delete`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        credentials: "include",
-        body: JSON.stringify({}),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        console.error("❌ delete chat failed:", res.status, txt);
-        return;
-      }
-
-      onRefreshChats?.();
-    } catch (err) {
-      console.error("❌ Error deleting chat:", err);
-    }
   };
 
   const handleBlockUser = async (userId: number) => {
@@ -172,7 +137,9 @@ export default function WhatsAppSidebar({
 
   const filteredChats = chats.filter((chat) => {
     if (!searchQuery.trim()) return true;
-    return chat.otherUser.username.toLowerCase().includes(searchQuery.trim().toLowerCase());
+    return chat.otherUser.username
+      .toLowerCase()
+      .includes(searchQuery.trim().toLowerCase());
   });
 
   return (
@@ -189,7 +156,9 @@ export default function WhatsAppSidebar({
               </div>
 
               <div>
-                <h2 className="font-semibold text-foreground text-lg">{currentUser.username}</h2>
+                <h2 className="font-semibold text-foreground text-lg">
+                  {currentUser.username}
+                </h2>
                 <div className="flex items-center space-x-2">
                   <div
                     className={cn(
@@ -235,7 +204,7 @@ export default function WhatsAppSidebar({
           </div>
         </div>
 
-        {/* Search Chats */}
+        {/* Search */}
         <div className="p-3 bg-background">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground z-10 pointer-events-none" />
@@ -293,17 +262,15 @@ export default function WhatsAppSidebar({
                     }}
                   >
                     <div className="flex items-center space-x-3">
-                      {/* Avatar */}
                       <div className="relative flex-shrink-0">
                         <div className="w-14 h-14 bg-gradient-to-br from-primary/20 via-primary/30 to-primary/40 rounded-full flex items-center justify-center shadow-sm">
                           <span className="text-primary font-bold text-xl">
                             {chat.otherUser.username.charAt(0).toUpperCase()}
                           </span>
                         </div>
-                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-background shadow-sm"></div>
+                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-background shadow-sm" />
                       </div>
 
-                      {/* Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-1">
                           <h3 className="font-semibold text-base text-foreground truncate">
@@ -334,7 +301,6 @@ export default function WhatsAppSidebar({
                         </div>
                       </div>
 
-                      {/* Menu */}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -348,9 +314,20 @@ export default function WhatsAppSidebar({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
                           <DropdownMenuItem
-                            onClick={(e) => {
+                            onClick={async (e) => {
                               e.stopPropagation();
-                              handleDeleteChat(chat.id);
+                              if (onDeleteChat) {
+                                await onDeleteChat(chat.id); // ✅ FIX: Hook/ChatPage übernimmt
+                              } else {
+                                // fallback
+                                await fetch(`/api/chats/${chat.id}/delete`, {
+                                  method: "POST",
+                                  headers: authHeaders({ "Content-Type": "application/json" }),
+                                  credentials: "include",
+                                  body: JSON.stringify({}),
+                                });
+                                onRefreshChats?.();
+                              }
                             }}
                             className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
                           >
@@ -359,9 +336,9 @@ export default function WhatsAppSidebar({
                           </DropdownMenuItem>
 
                           <DropdownMenuItem
-                            onClick={(e) => {
+                            onClick={async (e) => {
                               e.stopPropagation();
-                              handleBlockUser(chat.otherUser.id);
+                              await handleBlockUser(chat.otherUser.id);
                             }}
                             className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
                           >
@@ -379,7 +356,6 @@ export default function WhatsAppSidebar({
         </div>
       </div>
 
-      {/* New Chat Modal */}
       <NewChatModal
         open={showNewChatDialog}
         onOpenChange={setShowNewChatDialog}
