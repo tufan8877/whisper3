@@ -229,14 +229,14 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          {/* ✅ LOGO: Deutlich größer + responsive (Handy) */}
+          {/* ✅ LOGO: Mobile deutlich größer, Desktop bleibt gleich */}
           <div className="mx-auto mb-5 sm:mb-6 flex items-center justify-center">
             <img
               src={logoPath}
               alt="VelumChat Logo"
               className="
                 block
-                w-[180px] h-[180px]
+                w-[240px] h-[240px]
                 sm:w-[220px] sm:h-[220px]
                 md:w-[260px] md:h-[260px]
                 object-contain
