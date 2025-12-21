@@ -48,7 +48,12 @@ export interface IStorage {
 
   // Block / Delete chat (used in routes.ts)
   blockUser(blockerId: number, blockedId: number): Promise<void>;
+
+  // ✅ Delete with timestamp (cutoff)
   deleteChatForUser(userId: number, chatId: number): Promise<void>;
+  getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null>;
+
+  // (legacy helpers)
   isChatDeletedForUser(userId: number, chatId: number): Promise<boolean>;
   reactivateChatForUser(userId: number, chatId: number): Promise<void>;
 }
@@ -65,26 +70,13 @@ class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
-  /**
-   * ✅ FIX: Case-insensitive Username Lookup
-   * Damit "Max" == "max" beim Login funktioniert.
-   */
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const u = String(username || "").trim();
-    if (!u) return undefined;
-
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(sql`LOWER(${users.username}) = LOWER(${u})`);
-
+    const [user] = await db.select().from(users).where(eq(users.username, username));
     return user || undefined;
   }
 
   async createUser(user: InsertUser): Promise<User> {
-    // ✅ stabil: trim username
-    const cleaned: any = { ...user, username: String((user as any).username || "").trim() };
-    const [created] = await db.insert(users).values(cleaned).returning();
+    const [created] = await db.insert(users).values(user).returning();
     return created;
   }
 
@@ -230,30 +222,12 @@ class DatabaseStorage implements IStorage {
   // Search
   // --------------------
   async searchUsers(query: string, excludeId: number): Promise<User[]> {
-    const q = String(query || "").trim();
-    if (!q) return [];
-
     const validExcludeId = Number.isFinite(excludeId) ? excludeId : 0;
-
-    // ✅ Block-Filter: weder Leute anzeigen die du blockst, noch die dich blocken
-    const notBlocked = sql`NOT EXISTS (
-      SELECT 1 FROM ${blockedUsers} b
-      WHERE
-        (b.blocker_id = ${validExcludeId} AND b.blocked_id = ${users.id})
-        OR
-        (b.blocker_id = ${users.id} AND b.blocked_id = ${validExcludeId})
-    )`;
 
     return await db
       .select()
       .from(users)
-      .where(
-        and(
-          sql`${users.username} ILIKE ${"%" + q + "%"}`,
-          ne(users.id, validExcludeId),
-          notBlocked
-        )
-      )
+      .where(and(sql`${users.username} ILIKE ${"%" + query + "%"}`, ne(users.id, validExcludeId)))
       .limit(10);
   }
 
@@ -267,8 +241,24 @@ class DatabaseStorage implements IStorage {
       .onConflictDoNothing();
   }
 
+  // ✅ NEW: chat delete = set deletedAt (cutoff)
   async deleteChatForUser(userId: number, chatId: number): Promise<void> {
-    await db.insert(deletedChats).values({ userId, chatId } as any).onConflictDoNothing();
+    await db
+      .insert(deletedChats)
+      .values({ userId, chatId, deletedAt: new Date() } as any)
+      .onConflictDoUpdate({
+        target: [deletedChats.userId, deletedChats.chatId] as any,
+        set: { deletedAt: new Date() } as any,
+      });
+  }
+
+  async getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null> {
+    const [row] = await db
+      .select({ deletedAt: (deletedChats as any).deletedAt })
+      .from(deletedChats)
+      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+
+    return row?.deletedAt ?? null;
   }
 
   async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
@@ -279,6 +269,8 @@ class DatabaseStorage implements IStorage {
     return !!row;
   }
 
+  // ⚠️ Wir löschen den deletedChats-Eintrag NICHT mehr automatisch.
+  // Wenn du es wirklich brauchst, kannst du es manuell nutzen.
   async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
     await db
       .delete(deletedChats)
