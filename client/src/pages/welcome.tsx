@@ -13,7 +13,10 @@ import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 
-// ✅ Neues Logo
+// ✅ WICHTIG: Wenn Render/Vite wegen .PNG (Großbuchstaben) spinnt:
+// Benenne die Datei in GitHub um: attached_assets/VelumChat_Logo.png
+// und importiere dann:
+// import logoPath from "@assets/VelumChat_Logo.png";
 import logoPath from "@assets/VelumChat_Logo.PNG";
 
 type ApiOk<T> = { ok: true; token: string; user: T };
@@ -23,9 +26,6 @@ function isObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
-/**
- * ✅ postJson: relative URL + Timeout + klare Fehlermeldungen
- */
 async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<T> {
   const url = path.startsWith("/") ? path : `/${path}`;
   const controller = new AbortController();
@@ -226,12 +226,12 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          {/* ✅ Größeres Logo ohne Cropping */}
-          <div className="mx-auto h-44 w-44 sm:h-52 sm:w-52 bg-primary rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
+          {/* ✅ LOGO: kein bg-primary mehr (das war der “hellblaue Hintergrund” im Code) */}
+          <div className="mx-auto h-40 w-40 sm:h-44 sm:w-44 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden">
             <img
               src={logoPath}
               alt="VelumChat Logo"
-              className="w-full h-full object-contain p-1"
+              className="w-full h-full object-contain"
               draggable={false}
             />
           </div>
@@ -322,7 +322,6 @@ export default function WelcomePage() {
           </Card>
         </div>
 
-        {/* Features */}
         <div className="mt-12 mb-8">
           <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
