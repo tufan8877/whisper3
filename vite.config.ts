@@ -7,15 +7,31 @@ export default defineConfig({
   plugins: [
     react(),
     runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
+    ...(process.env.NODE_ENV !== "production" && process.env.REPL_ID !== undefined
       ? [
           await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer(),
+            m.cartographer()
           ),
         ]
       : []),
   ],
+
+  // ✅ WICHTIG: PNG/JPG/etc als Assets zulassen (Case-insensitive Varianten)
+  assetsInclude: [
+    "**/*.png",
+    "**/*.PNG",
+    "**/*.jpg",
+    "**/*.JPG",
+    "**/*.jpeg",
+    "**/*.JPEG",
+    "**/*.gif",
+    "**/*.GIF",
+    "**/*.svg",
+    "**/*.SVG",
+    "**/*.webp",
+    "**/*.WEBP",
+  ],
+
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -23,11 +39,14 @@ export default defineConfig({
       "@assets": path.resolve(import.meta.dirname, "attached_assets"),
     },
   },
+
   root: path.resolve(import.meta.dirname, "client"),
+
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
   },
+
   server: {
     fs: {
       strict: true,
