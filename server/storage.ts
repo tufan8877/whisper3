@@ -46,7 +46,7 @@ export interface IStorage {
   // Search
   searchUsers(query: string, excludeId: number): Promise<User[]>;
 
-  // Block / Delete chat (used in routes.ts)
+  // Block / Delete chat
   blockUser(blockerId: number, blockedId: number): Promise<void>;
 
   // ✅ Delete with timestamp (cutoff)
@@ -143,7 +143,7 @@ class DatabaseStorage implements IStorage {
       .where(
         and(
           or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)),
-          isNull(deletedChats.id)
+          isNull(deletedChats.id) // ✅ hide deleted chats in list
         )
       )
       .orderBy(desc(chats.lastMessageTimestamp), desc(chats.createdAt));
@@ -235,26 +235,38 @@ class DatabaseStorage implements IStorage {
   // Block / Deleted chats
   // --------------------
   async blockUser(blockerId: number, blockedId: number): Promise<void> {
-    await db
-      .insert(blockedUsers)
-      .values({ blockerId, blockedId } as any)
-      .onConflictDoNothing();
+    await db.insert(blockedUsers).values({ blockerId, blockedId } as any).onConflictDoNothing();
   }
 
-  // ✅ NEW: chat delete = set deletedAt (cutoff)
+  /**
+   * ✅ Delete = set deletedAt cutoff
+   * SAFE Version (works even if DB has no unique constraint)
+   */
   async deleteChatForUser(userId: number, chatId: number): Promise<void> {
-    await db
-      .insert(deletedChats)
-      .values({ userId, chatId, deletedAt: new Date() } as any)
-      .onConflictDoUpdate({
-        target: [deletedChats.userId, deletedChats.chatId] as any,
-        set: { deletedAt: new Date() } as any,
-      });
+    const now = new Date();
+
+    // 1) check if row exists
+    const [existing] = await db
+      .select({ id: deletedChats.id })
+      .from(deletedChats)
+      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+
+    if (existing?.id) {
+      // 2) update existing
+      await db
+        .update(deletedChats)
+        .set({ deletedAt: now } as any)
+        .where(eq(deletedChats.id, existing.id));
+      return;
+    }
+
+    // 3) insert new
+    await db.insert(deletedChats).values({ userId, chatId, deletedAt: now } as any);
   }
 
   async getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null> {
     const [row] = await db
-      .select({ deletedAt: (deletedChats as any).deletedAt })
+      .select({ deletedAt: deletedChats.deletedAt })
       .from(deletedChats)
       .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
 
@@ -263,14 +275,13 @@ class DatabaseStorage implements IStorage {
 
   async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
     const [row] = await db
-      .select()
+      .select({ id: deletedChats.id })
       .from(deletedChats)
       .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
-    return !!row;
+    return !!row?.id;
   }
 
-  // ⚠️ Wir löschen den deletedChats-Eintrag NICHT mehr automatisch.
-  // Wenn du es wirklich brauchst, kannst du es manuell nutzen.
+  // ⚠️ Manuell möglich, wird aber NICHT mehr automatisch beim Senden gemacht.
   async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
     await db
       .delete(deletedChats)
