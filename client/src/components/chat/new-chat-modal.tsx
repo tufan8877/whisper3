@@ -72,14 +72,11 @@ export default function NewChatModal({
 
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(
-          `/api/search-users?q=${encodeURIComponent(q)}`,
-          {
-            method: "GET",
-            headers: authHeaders(),
-            credentials: "include",
-          }
-        );
+        const res = await fetch(`/api/search-users?q=${encodeURIComponent(q)}`, {
+          method: "GET",
+          headers: authHeaders(),
+          credentials: "include",
+        });
 
         if (!res.ok) {
           const txt = await res.text().catch(() => "");
@@ -89,7 +86,6 @@ export default function NewChatModal({
         }
 
         const users = await res.json();
-        // extra safety: exclude self even if backend already does it
         const filtered = Array.isArray(users)
           ? users.filter((u: any) => u?.id !== currentUser.id)
           : [];
@@ -115,7 +111,7 @@ export default function NewChatModal({
         headers: authHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
         body: JSON.stringify({
-          participant1Id: currentUser.id, // backend prüft: muss token-user sein
+          participant1Id: currentUser.id,
           participant2Id: user.id,
         }),
       });
@@ -132,7 +128,6 @@ export default function NewChatModal({
         return;
       }
 
-      // Dein Backend liefert: { ok: true, chat }
       const chatObj = json?.chat || json;
       if (!chatObj?.id) {
         console.error("❌ invalid chat response:", json);
@@ -144,7 +139,6 @@ export default function NewChatModal({
 
       onOpenChange(false);
       onRefreshChats?.();
-
       onChatCreated(chatWithUser);
     } catch (err) {
       console.error("❌ Start chat error:", err);
