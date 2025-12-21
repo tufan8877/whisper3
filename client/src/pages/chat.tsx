@@ -21,15 +21,20 @@ export default function ChatPage() {
   // User nur einmal beim Mount laden
   useEffect(() => {
     const initializeUser = async () => {
-      let userData = localStorage.getItem("user");
+      const userData = localStorage.getItem("user");
 
       if (!userData) {
-        console.log("🔍 WICKR-ME-RECOVERY: Searching for profile in backup locations...");
+        console.log(
+          "🔍 WICKR-ME-RECOVERY: Searching for profile in backup locations..."
+        );
         const { profileProtection } = await import("@/lib/profile-protection");
         const recovered = profileProtection.retrieveProfile();
         if (recovered) {
           setCurrentUser(recovered);
-          console.log("✅ Profile recovered from backup storage:", recovered.username);
+          console.log(
+            "✅ Profile recovered from backup storage:",
+            recovered.username
+          );
           return;
         }
         console.log("⚠️ No user profile found, redirecting to login");
@@ -39,11 +44,18 @@ export default function ChatPage() {
 
       try {
         const user = JSON.parse(userData);
-        console.log("👤 Loaded user from localStorage:", user.username, "ID:", user.id);
+        console.log(
+          "👤 Loaded user from localStorage:",
+          user.username,
+          "ID:",
+          user.id
+        );
         setCurrentUser(user);
       } catch (error) {
         console.error("Failed to parse user data:", error);
-        console.log("🚫 WICKR-ME-PROTECTION: NOT removing user data on parse error");
+        console.log(
+          "🚫 WICKR-ME-PROTECTION: NOT removing user data on parse error"
+        );
         setLocation("/");
       }
     };
@@ -63,6 +75,7 @@ export default function ChatPage() {
     selectedChat,
     loadPersistentContacts,
     unreadCounts,
+    deleteChat, // ✅ NEU: wichtig für "Chat löschen = alte Messages wirklich weg"
   } = usePersistentChats(currentUser?.id, socket);
 
   // Debug Logs
@@ -94,8 +107,12 @@ export default function ChatPage() {
       console.log("📱 Mobile: Setting up chat list refresh system");
       const mobileRefreshInterval = setInterval(() => {
         console.log("📱 Mobile: Periodic chat list refresh");
-        queryClient.invalidateQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
-        queryClient.refetchQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
+        queryClient.invalidateQueries({
+          queryKey: [`/api/chats/${currentUser.id}`],
+        });
+        queryClient.refetchQueries({
+          queryKey: [`/api/chats/${currentUser.id}`],
+        });
       }, 2000);
 
       return () => clearInterval(mobileRefreshInterval);
@@ -109,7 +126,7 @@ export default function ChatPage() {
     });
   }, [currentUser, socket]);
 
-  // ✅ Senden (FIX: destructTimer in SEKUNDEN, NICHT ms)
+  // ✅ Senden (destructTimer in SEKUNDEN)
   const handleSendMessage = (
     content: string,
     type: string,
@@ -135,14 +152,10 @@ export default function ChatPage() {
       return;
     }
 
-    // ✅ WICHTIG: Sekunden normalisieren (min 5 Sekunden)
     const destructTimerSec = Math.max(Number(destructTimer) || 0, 5);
 
-    console.log(
-      `⏰ SELBSTLÖSCHUNG in ${destructTimerSec}s konfiguriert (Sekunden)`
-    );
+    console.log(`⏰ SELBSTLÖSCHUNG in ${destructTimerSec}s (Sekunden)`);
 
-    // ⚠️ sendMessage erwartet bei dir destructTimer (serverseitig) ebenfalls Sekunden
     sendMessage(content, type, destructTimerSec, file);
   };
 
@@ -170,9 +183,9 @@ export default function ChatPage() {
           chats={chats as any}
           selectedChat={selectedChat}
           onSelectChat={(chat: any) => {
-            console.log(`💬 WHATSAPP-CHAT: ${chat.otherUser.username} einzeln beigetreten`);
-            console.log("DEBUG: Selected chat object:", chat);
-            console.log("DEBUG: Chat unreadCount:", chat.unreadCount);
+            console.log(
+              `💬 WHATSAPP-CHAT: ${chat.otherUser.username} einzeln beigetreten`
+            );
             selectChat(chat);
           }}
           onOpenSettings={() => setShowSettings(true)}
@@ -180,8 +193,28 @@ export default function ChatPage() {
           isLoading={isLoading}
           unreadCounts={unreadCounts}
           onRefreshChats={() => {
-            console.log("🔄 Refreshing chat list after context menu action");
+            console.log("🔄 Refreshing chat list");
             loadPersistentContacts();
+          }}
+          // ✅ NEU: Damit "Chat löschen" richtig funktioniert
+          onDeleteChat={async (chatId: number) => {
+            try {
+              // 1) UI sofort "zurück", falls gerade dieser Chat offen ist
+              if (selectedChat?.id === chatId) {
+                selectChat(null as any);
+              }
+
+              // 2) Hook-Delete: setzt Cutoff + löscht lokale Messages + refresh
+              if (deleteChat) {
+                await deleteChat(chatId);
+              } else {
+                // Fallback: wenn deleteChat nicht existiert
+                await fetch(`/api/chats/${chatId}/delete`, { method: "POST" });
+                await loadPersistentContacts();
+              }
+            } catch (e) {
+              console.error("❌ onDeleteChat error:", e);
+            }
           }}
         />
       </div>
@@ -199,7 +232,7 @@ export default function ChatPage() {
           onSendMessage={handleSendMessage}
           isConnected={socket?.isConnected || false}
           onBackToList={() => {
-            console.log("📱 MOBILE: Zurück zur Chat-Liste - nur ein Schritt");
+            console.log("📱 MOBILE: Zurück zur Chat-Liste");
             selectChat(null as any);
           }}
         />
