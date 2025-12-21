@@ -23,9 +23,6 @@ function isObject(v: any): v is Record<string, any> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
-/**
- * ✅ postJson: relative URL + Timeout + klare Fehlermeldungen
- */
 async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<T> {
   const url = path.startsWith("/") ? path : `/${path}`;
   const controller = new AbortController();
@@ -68,10 +65,7 @@ async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<
 
   if (json === null) {
     throw new Error(
-      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(
-        0,
-        200
-      )}`
+      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(0, 200)}`
     );
   }
 
@@ -199,11 +193,14 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/register", {
-        username: finalUsername,
-        password: registerPassword,
-        publicKey,
-      });
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
+        "/api/register",
+        {
+          username: finalUsername,
+          password: registerPassword,
+          publicKey,
+        }
+      );
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
@@ -226,11 +223,13 @@ export default function WelcomePage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
-      <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
+    // ✅ weniger vertikaler padding -> alles rauf
+    <div className="min-h-screen flex items-start justify-center px-3 py-2 sm:px-4 sm:py-6">
+      {/* ✅ weniger space-y -> kompakter */}
+      <div className="max-w-6xl w-full space-y-4 sm:space-y-6">
         <div className="text-center">
-          {/* ✅ LOGO: Mobile deutlich größer, Desktop bleibt gleich */}
-          <div className="mx-auto mb-5 sm:mb-6 flex items-center justify-center">
+          {/* ✅ Logo bleibt groß, aber weniger margin-bottom */}
+          <div className="mx-auto mb-2 sm:mb-4 flex items-center justify-center">
             <img
               src={logoPath}
               alt="VelumChat Logo"
@@ -244,11 +243,15 @@ export default function WelcomePage() {
             />
           </div>
 
-          <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
+          {/* ✅ weniger Abstand nach unten */}
+          <p className="text-text-muted text-base sm:text-lg px-2 -mt-1">
+            {t("welcomeDescription")}
+          </p>
         </div>
 
-        <div className="flex justify-center mb-4 sm:mb-8">
-          <div className="bg-surface/80 border border-border rounded-xl p-3 sm:p-4 shadow-lg backdrop-blur-sm">
+        {/* ✅ Language Selector weniger Abstand */}
+        <div className="flex justify-center -mt-1 mb-2 sm:mb-4">
+          <div className="bg-surface/80 border border-border rounded-xl p-2 sm:p-3 shadow-lg backdrop-blur-sm">
             <LanguageSelector />
           </div>
         </div>
@@ -330,9 +333,10 @@ export default function WelcomePage() {
           </Card>
         </div>
 
-        {/* Features (unverändert) */}
-        <div className="mt-12 mb-8">
-          <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
+        {/* ✅ Features weniger Top-Margin, damit unten mehr sichtbar ist */}
+        <div className="mt-6 mb-4">
+          <h3 className="text-2xl font-bold text-foreground mb-6 text-center">{t("features")}</h3>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
             <Card className="bg-surface/50 border-border hover:bg-surface/70 transition-colors">
               <CardContent className="p-4 sm:p-6 text-center">
@@ -376,8 +380,9 @@ export default function WelcomePage() {
           </div>
         </div>
 
-        <div className="text-center space-y-4 pt-8 border-t border-border/50">
-          <div className="space-y-2">
+        {/* Footer kompakter */}
+        <div className="text-center space-y-3 pt-4 border-t border-border/50">
+          <div className="space-y-1">
             <p className="text-sm text-muted-foreground">{t("messagesNotStored")}</p>
             <p className="text-sm text-muted-foreground">{t("openSourceAudited")}</p>
           </div>
