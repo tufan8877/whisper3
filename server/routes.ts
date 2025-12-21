@@ -8,7 +8,6 @@ import { z } from "zod";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
@@ -39,7 +38,10 @@ function safeJson(res: any, status: number, payload: any) {
 
 function normalizeDestructTimerSeconds(raw: any) {
   let t = toInt(raw, 86400);
+
+  // Wenn client ms sendet -> in sekunden umrechnen
   if (t > 100000) t = Math.floor(t / 1000);
+
   if (t < 5) t = 5;
   const max = 7 * 24 * 60 * 60;
   if (t > max) t = max;
@@ -182,8 +184,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const q = String(req.query?.q || "").trim();
       const excludeId = req.auth?.userId ?? 0;
       if (!q) return res.json([]);
-      const users = await storage.searchUsers(q, excludeId);
-      return res.json(users);
+      const found = await storage.searchUsers(q, excludeId);
+      return res.json(found);
     } catch (err) {
       console.error("Search users error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to search users" });
@@ -195,7 +197,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const participant1Id = toInt(req.body?.participant1Id, 0);
       const participant2Id = toInt(req.body?.participant2Id, 0);
 
-      // ✅ only allow the logged-in user to be participant1
       if (participant1Id !== req.auth.userId) {
         return safeJson(res, 403, { ok: false, message: "Forbidden" });
       }
@@ -218,20 +219,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userId !== req.auth.userId) {
         return safeJson(res, 403, { ok: false, message: "Forbidden" });
       }
-      const chats = await storage.getChatsByUserId(userId);
-      return res.json(chats);
+      const list = await storage.getChatsByUserId(userId);
+      return res.json(list);
     } catch (err) {
       console.error("Get chats error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to fetch chats" });
     }
   });
 
-  app.get("/api/chats/:chatId/messages", requireAuth, async (_req, res) => {
-    // Optional: hier könnte man zusätzlich prüfen, ob user im chat ist.
+  /**
+   * ✅ FIX: Messages endpoint muss deletedAt berücksichtigen:
+   * Wenn User Chat gelöscht hat -> nur Messages NACH deletedAt zurückgeben.
+   */
+  app.get("/api/chats/:chatId/messages", requireAuth, async (req: any, res) => {
     try {
-      const chatId = toInt(_req.params.chatId, 0);
+      const chatId = toInt(req.params.chatId, 0);
       if (!chatId) return safeJson(res, 400, { ok: false, message: "Invalid chatId" });
-      const msgs = await storage.getMessagesByChat(chatId);
+
+      const userId = req.auth.userId;
+
+      // deletedAt cutoff holen
+      const deletedAt = await storage.getDeletedAtForUserChat(userId, chatId);
+
+      let msgs = await storage.getMessagesByChat(chatId);
+
+      if (deletedAt) {
+        const cutoff = deletedAt.getTime();
+        msgs = msgs.filter((m: any) => new Date(m.createdAt).getTime() > cutoff);
+      }
+
       return res.json(msgs);
     } catch (err) {
       console.error("Get messages error:", err);
@@ -253,6 +269,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  /**
+   * ✅ Chat "delete" = set deletedAt timestamp (cutoff)
+   * (nicht hart löschen)
+   */
   app.post("/api/chats/:chatId/delete", requireAuth, async (req: any, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
@@ -378,7 +398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
-        // ✅ JOIN requires token (no more userId-faking)
+        // ✅ JOIN requires token
         if (parsed?.type === "join") {
           const token = String(parsed?.token || "");
           if (!token) {
@@ -461,9 +481,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            // re-activate deleted chat for receiver if needed
-            const wasDeleted = await storage.isChatDeletedForUser(receiverId, chat.id);
-            if (wasDeleted) await storage.reactivateChatForUser(receiverId, chat.id);
+            // ✅ WICHTIG: NICHT MEHR reactivateChatForUser()
+            // Wenn receiver den Chat gelöscht hat, bleibt deletedAt bestehen.
+            // Dadurch bekommt er beim Laden nur Messages NACH deletedAt.
 
             const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
             const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
@@ -495,7 +515,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           default:
-            // ignore
             break;
         }
       } catch (err) {
