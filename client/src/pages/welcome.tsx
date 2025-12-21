@@ -13,11 +13,7 @@ import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 
-// ✅ WICHTIG: Wenn Render/Vite wegen .PNG (Großbuchstaben) spinnt:
-// Benenne die Datei in GitHub um: attached_assets/VelumChat_Logo.png
-// und importiere dann:
-// import logoPath from "@assets/VelumChat_Logo.png";
-import logoPath from "@assets/VelumChat_Logo.PNG";
+import logoPath from "@assets/VelumChat_Logo.png";
 
 type ApiOk<T> = { ok: true; token: string; user: T };
 type ApiErr = { ok: false; message: string; errors?: any };
@@ -226,8 +222,8 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          {/* ✅ LOGO: kein bg-primary mehr (das war der “hellblaue Hintergrund” im Code) */}
-          <div className="mx-auto h-40 w-40 sm:h-44 sm:w-44 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden">
+          {/* ✅ LOGO: größer */}
+          <div className="mx-auto h-52 w-52 sm:h-60 sm:w-60 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden">
             <img
               src={logoPath}
               alt="VelumChat Logo"
@@ -322,6 +318,7 @@ export default function WelcomePage() {
           </Card>
         </div>
 
+        {/* Features (unverändert) */}
         <div className="mt-12 mb-8">
           <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
