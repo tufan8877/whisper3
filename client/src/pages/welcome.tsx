@@ -13,7 +13,7 @@ import { profileProtection } from "@/lib/profile-protection";
 import { SessionPersistence } from "@/lib/session-persistence";
 import { EyeOff, Shield, Clock, Database, LogIn, UserPlus } from "lucide-react";
 
-// ✅ NEUES LOGO:
+// ✅ Neues Logo
 import logoPath from "@assets/VelumChat_Logo.PNG";
 
 type ApiOk<T> = { ok: true; token: string; user: T };
@@ -68,10 +68,7 @@ async function postJson<T>(path: string, data: any, timeoutMs = 15000): Promise<
 
   if (json === null) {
     throw new Error(
-      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(
-        0,
-        200
-      )}`
+      `Server returned non-JSON (ok=${res.ok}). Wahrscheinlich landet /api/* im Frontend. Body: ${text.slice(0, 200)}`
     );
   }
 
@@ -127,13 +124,10 @@ export default function WelcomePage() {
 
     setIsLoading(true);
     try {
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/login",
-        {
-          username: u,
-          password: loginPassword,
-        }
-      );
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/login", {
+        username: u,
+        password: loginPassword,
+      });
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("loginFailed"));
@@ -159,7 +153,6 @@ export default function WelcomePage() {
       const token = (data as any).token;
       const userProfile = { ...(data as any).user, privateKey, token };
 
-      // ✅ WICHTIG: token dauerhaft speichern
       profileProtection.storeProfile(userProfile);
       localStorage.setItem("user", JSON.stringify(userProfile));
 
@@ -221,7 +214,6 @@ export default function WelcomePage() {
       const token = (data as any).token;
       const userProfile = { ...(data as any).user, privateKey, token };
 
-      // ✅ WICHTIG: token dauerhaft speichern
       profileProtection.storeProfile(userProfile);
       localStorage.setItem("user", JSON.stringify(userProfile));
 
@@ -239,9 +231,16 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 bg-primary rounded-xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
-            <img src={logoPath} alt="VelumChat Logo" className="w-full h-full object-cover rounded-xl" />
+          {/* ✅ FIX: object-contain + padding, Hintergrund neutral */}
+          <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg bg-transparent">
+            <img
+              src={logoPath}
+              alt="VelumChat Logo"
+              className="w-full h-full object-contain p-3"
+              draggable={false}
+            />
           </div>
+
           <p className="text-text-muted text-base sm:text-lg px-2">{t("welcomeDescription")}</p>
         </div>
 
@@ -328,7 +327,7 @@ export default function WelcomePage() {
           </Card>
         </div>
 
-        {/* Features (unverändert) */}
+        {/* Features */}
         <div className="mt-12 mb-8">
           <h3 className="text-2xl font-bold text-foreground mb-8 text-center">{t("features")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 max-w-5xl mx-auto">
