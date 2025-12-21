@@ -1,6 +1,33 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { User, Chat, Message } from "@shared/schema";
 
+/**
+ * Lokaler Cutoff: Wenn du einen Chat löschst, merken wir uns "deletedAt".
+ * Beim erneuten Öffnen werden alle Nachrichten mit createdAt <= deletedAt ausgefiltert,
+ * damit alte Messages NIE wieder erscheinen (auch wenn Backend sie liefert).
+ */
+function storageKey(userId: number) {
+  return `chat_cutoffs_v1_${userId}`;
+}
+
+function loadCutoffs(userId: number): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(storageKey(userId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveCutoffs(userId: number, data: Record<string, string>) {
+  try {
+    localStorage.setItem(storageKey(userId), JSON.stringify(data));
+  } catch {}
+}
+
 function getAuthToken(): string | null {
   try {
     const raw = localStorage.getItem("user");
@@ -36,8 +63,15 @@ async function authedFetch(url: string, init?: RequestInit) {
   return res.json();
 }
 
+function toMs(dateLike: any): number {
+  const t = new Date(dateLike).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 export function usePersistentChats(userId?: number, socket?: any) {
-  const [persistentContacts, setPersistentContacts] = useState<Array<Chat & { otherUser: User; unreadCount?: number }>>([]);
+  const [persistentContacts, setPersistentContacts] = useState<
+    Array<Chat & { otherUser: User; unreadCount?: number }>
+  >([]);
   const [activeMessages, setActiveMessages] = useState<Map<number, Message[]>>(new Map());
   const [selectedChat, setSelectedChat] = useState<(Chat & { otherUser: User }) | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -46,8 +80,11 @@ export function usePersistentChats(userId?: number, socket?: any) {
   const deletionTimersRef = useRef<Map<number, any>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // ✅ Cutoff Map (chatId -> deletedAt ISO)
+  const cutoffsRef = useRef<Record<string, string>>({});
+
   // --------------------------
-  // Helpers
+  // Timers
   // --------------------------
   const clearTimer = (messageId: number) => {
     const t = deletionTimersRef.current.get(messageId);
@@ -57,7 +94,7 @@ export function usePersistentChats(userId?: number, socket?: any) {
 
   const scheduleMessageDeletion = useCallback((message: Message) => {
     try {
-      const expiresAtMs = new Date((message as any).expiresAt).getTime();
+      const expiresAtMs = toMs((message as any).expiresAt);
       const now = Date.now();
       const ms = Math.max(expiresAtMs - now, 200);
 
@@ -80,6 +117,42 @@ export function usePersistentChats(userId?: number, socket?: any) {
   }, []);
 
   // --------------------------
+  // Cutoff helpers
+  // --------------------------
+  const getCutoffMs = useCallback(
+    (chatId: number): number => {
+      if (!userId) return 0;
+      const iso = cutoffsRef.current[String(chatId)];
+      return iso ? toMs(iso) : 0;
+    },
+    [userId]
+  );
+
+  const setCutoffNow = useCallback(
+    (chatId: number) => {
+      if (!userId) return;
+      const nowIso = new Date().toISOString();
+      cutoffsRef.current[String(chatId)] = nowIso;
+      saveCutoffs(userId, cutoffsRef.current);
+    },
+    [userId]
+  );
+
+  const filterByCutoff = useCallback(
+    (chatId: number, msgs: any[]): any[] => {
+      const cutoff = getCutoffMs(chatId);
+      if (!cutoff) return msgs;
+
+      return (msgs || []).filter((m: any) => {
+        // createdAt kann Date oder ISO sein
+        const created = toMs(m.createdAt);
+        return created > cutoff;
+      });
+    },
+    [getCutoffMs]
+  );
+
+  // --------------------------
   // Load contacts + unread
   // --------------------------
   const loadPersistentContacts = useCallback(async () => {
@@ -89,7 +162,6 @@ export function usePersistentChats(userId?: number, socket?: any) {
     try {
       const contacts = await authedFetch(`/api/chats/${userId}`);
 
-      // unreadCount sauber setzen
       const newUnread = new Map<number, number>();
       (contacts || []).forEach((c: any) => {
         let unread = 0;
@@ -99,7 +171,6 @@ export function usePersistentChats(userId?: number, socket?: any) {
         if (unread > 0) newUnread.set(c.id, unread);
       });
 
-      // WhatsApp Sorting
       const sorted = (contacts || []).sort((a: any, b: any) => {
         const aTime = a.lastMessage?.createdAt || a.lastMessageTimestamp || a.createdAt;
         const bTime = b.lastMessage?.createdAt || b.lastMessageTimestamp || b.createdAt;
@@ -109,7 +180,7 @@ export function usePersistentChats(userId?: number, socket?: any) {
       setUnreadCounts(newUnread);
       setPersistentContacts(sorted);
 
-      // messages für existierende chats laden (optional, aber ok)
+      // Optional: Messages laden (nur wenn du willst)
       for (const c of sorted) {
         await loadActiveMessages(c.id);
       }
@@ -126,16 +197,17 @@ export function usePersistentChats(userId?: number, socket?: any) {
   const loadActiveMessages = useCallback(
     async (chatId: number) => {
       try {
-        // ✅ Auth + richtiger Endpoint (server: /api/chats/:chatId/messages)
-        const msgs = await authedFetch(`/api/chats/${chatId}/messages`);
+        const msgsRaw = await authedFetch(`/api/chats/${chatId}/messages`);
+
+        const msgs = filterByCutoff(chatId, Array.isArray(msgsRaw) ? msgsRaw : []);
 
         setActiveMessages((prev) => {
           const next = new Map(prev);
-          next.set(chatId, Array.isArray(msgs) ? msgs : []);
+          next.set(chatId, msgs);
           return next;
         });
 
-        (Array.isArray(msgs) ? msgs : []).forEach((m: Message) => scheduleMessageDeletion(m));
+        msgs.forEach((m: Message) => scheduleMessageDeletion(m));
       } catch (e) {
         console.error(`❌ loadActiveMessages chat=${chatId}:`, e);
         setActiveMessages((prev) => {
@@ -145,7 +217,7 @@ export function usePersistentChats(userId?: number, socket?: any) {
         });
       }
     },
-    [scheduleMessageDeletion]
+    [scheduleMessageDeletion, filterByCutoff]
   );
 
   // --------------------------
@@ -154,10 +226,9 @@ export function usePersistentChats(userId?: number, socket?: any) {
   const selectChat = useCallback(
     async (chat: (Chat & { otherUser: User }) | null) => {
       setSelectedChat(chat);
-
       if (!chat || !userId) return;
 
-      // mark-read (auth)
+      // mark-read
       try {
         await authedFetch(`/api/chats/${chat.id}/mark-read`, {
           method: "POST",
@@ -188,7 +259,43 @@ export function usePersistentChats(userId?: number, socket?: any) {
   );
 
   // --------------------------
-  // Send message (SECONDS!)
+  // ✅ Delete chat (CUT-OFF)
+  // Du rufst diese Funktion beim "Chat löschen" auf.
+  // Dadurch sind alle alten Nachrichten endgültig weg (UI), auch wenn Backend sie liefert.
+  // --------------------------
+  const deleteChat = useCallback(
+    async (chatId: number) => {
+      if (!userId) return;
+
+      // 1) Set local cutoff NOW
+      setCutoffNow(chatId);
+
+      // 2) Clear local messages immediately
+      setActiveMessages((prev) => {
+        const next = new Map(prev);
+        next.set(chatId, []);
+        return next;
+      });
+
+      // 3) If chat currently open -> close it
+      setSelectedChat((prev) => (prev?.id === chatId ? null : prev));
+
+      // 4) Server delete (hides chat in list)
+      try {
+        await authedFetch(`/api/chats/${chatId}/delete`, { method: "POST" });
+      } catch (e) {
+        console.error("deleteChat server failed:", e);
+        // UI bleibt trotzdem clean durch cutoff
+      }
+
+      // 5) Reload list
+      await loadPersistentContacts();
+    },
+    [userId, setCutoffNow, loadPersistentContacts]
+  );
+
+  // --------------------------
+  // Send message (SECONDS)
   // --------------------------
   const sendMessage = useCallback(
     async (content: string, type: string = "text", destructTimerSec: number, file?: File) => {
@@ -223,10 +330,9 @@ export function usePersistentChats(userId?: number, socket?: any) {
       });
       scheduleMessageDeletion(optimistic);
 
-      // ✅ WebSocket send OBJECT (nicht JSON.stringify!)
       const wsPayload = {
         type: "message",
-        chatId: selectedChat.id, // ✅ schick chatId mit
+        chatId: selectedChat.id,
         senderId: userId,
         receiverId: selectedChat.otherUser.id,
         content,
@@ -237,9 +343,7 @@ export function usePersistentChats(userId?: number, socket?: any) {
       console.log("📤 WS send:", wsPayload);
       const ok = socket.send(wsPayload);
 
-      if (!ok) {
-        console.warn("⚠️ WS not open -> queued (useWebSocketReliable queues)");
-      }
+      if (!ok) console.warn("⚠️ WS not open -> queued (useWebSocketReliable queues)");
     },
     [selectedChat, userId, socket, scheduleMessageDeletion]
   );
@@ -258,6 +362,13 @@ export function usePersistentChats(userId?: number, socket?: any) {
       // ✅ nur wenn an mich
       if (m.receiverId !== userId) return;
 
+      // ✅ cutoff filter (wenn message vor delete liegt -> ignorieren)
+      const cutoff = getCutoffMs(m.chatId);
+      if (cutoff) {
+        const created = toMs(m.createdAt);
+        if (created && created <= cutoff) return;
+      }
+
       setActiveMessages((prev) => {
         const next = new Map(prev);
         const arr = next.get(m.chatId) || [];
@@ -269,7 +380,6 @@ export function usePersistentChats(userId?: number, socket?: any) {
 
       scheduleMessageDeletion(m);
 
-      // badge up (wenn chat nicht offen)
       if (!selectedChat || selectedChat.id !== m.chatId) {
         setUnreadCounts((prev) => {
           const next = new Map(prev);
@@ -279,19 +389,20 @@ export function usePersistentChats(userId?: number, socket?: any) {
         });
       }
 
-      // contacts refresh (last message etc.)
       setTimeout(() => loadPersistentContacts(), 100);
     };
 
     socket.on("message", onMsg);
     return () => socket.off?.("message", onMsg);
-  }, [socket, userId, scheduleMessageDeletion, selectedChat, loadPersistentContacts]);
+  }, [socket, userId, scheduleMessageDeletion, selectedChat, loadPersistentContacts, getCutoffMs]);
 
   // --------------------------
   // Initial load
   // --------------------------
   useEffect(() => {
-    if (userId) loadPersistentContacts();
+    if (!userId) return;
+    cutoffsRef.current = loadCutoffs(userId);
+    loadPersistentContacts();
   }, [userId, loadPersistentContacts]);
 
   useEffect(() => {
@@ -313,5 +424,8 @@ export function usePersistentChats(userId?: number, socket?: any) {
     messagesEndRef,
     loadPersistentContacts,
     unreadCounts,
+
+    // ✅ NEW: expose deleteChat so sidebar can call it
+    deleteChat,
   };
 }
