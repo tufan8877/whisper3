@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -11,7 +16,6 @@ import {
   LogOut,
   MessageCircle,
   KeyRound,
-  Users,
   MoreVertical,
   Trash2,
   UserX,
@@ -29,6 +33,12 @@ interface WhatsAppSidebarProps {
   isLoading: boolean;
   unreadCounts?: Map<number, number>;
   onRefreshChats?: () => void;
+
+  /**
+   * ✅ NEW: Wird aus usePersistentChats.deleteChat übergeben
+   * Muss beim Löschen aufgerufen werden, damit Cutoff + lokale Message-Clear passieren.
+   */
+  onDeleteChat?: (chatId: number) => void | Promise<void>;
 }
 
 function getAuthToken(): string | null {
@@ -60,6 +70,7 @@ export default function WhatsAppSidebar({
   isLoading,
   unreadCounts = new Map(),
   onRefreshChats,
+  onDeleteChat,
 }: WhatsAppSidebarProps) {
   const { t } = useLanguage();
 
@@ -71,13 +82,23 @@ export default function WhatsAppSidebar({
     window.location.href = "/";
   };
 
+  /**
+   * ✅ Wichtig: Jetzt NICHT mehr selbst /api/chats/:id/delete callen,
+   * sondern onDeleteChat() aufrufen (setzt Cutoff, löscht local messages, ruft server delete).
+   */
   const handleDeleteChat = async (chatId: number) => {
     try {
+      if (onDeleteChat) {
+        await onDeleteChat(chatId);
+        return;
+      }
+
+      // Fallback: falls onDeleteChat nicht übergeben wurde, machen wir zumindest server delete
       const res = await fetch(`/api/chats/${chatId}/delete`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
-        body: JSON.stringify({}), // backend nutzt req.auth.userId
+        body: JSON.stringify({}),
       });
 
       if (!res.ok) {
@@ -98,7 +119,7 @@ export default function WhatsAppSidebar({
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         credentials: "include",
-        body: JSON.stringify({}), // backend nutzt req.auth.userId
+        body: JSON.stringify({}),
       });
 
       if (!res.ok) {
@@ -242,7 +263,12 @@ export default function WhatsAppSidebar({
               </div>
               <h3 className="font-semibold text-foreground mb-2">{t("noChats")}</h3>
               <p className="text-sm text-muted-foreground mb-4">{t("noChatDescription")}</p>
-              <Button variant="outline" size="sm" onClick={() => setShowNewChatDialog(true)} className="gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowNewChatDialog(true)}
+                className="gap-2"
+              >
                 <Plus className="w-4 h-4" />
                 {t("newChat")}
               </Button>
@@ -274,7 +300,6 @@ export default function WhatsAppSidebar({
                             {chat.otherUser.username.charAt(0).toUpperCase()}
                           </span>
                         </div>
-                        {/* Online dot (optisch) */}
                         <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-background shadow-sm"></div>
                       </div>
 
@@ -354,14 +379,13 @@ export default function WhatsAppSidebar({
         </div>
       </div>
 
-      {/* New Chat Modal (User Search + Create Chat) */}
+      {/* New Chat Modal */}
       <NewChatModal
         open={showNewChatDialog}
         onOpenChange={setShowNewChatDialog}
         currentUser={currentUser}
         onRefreshChats={onRefreshChats}
         onChatCreated={(chatWithUser) => {
-          // sofort auswählen
           onSelectChat(chatWithUser);
         }}
       />
