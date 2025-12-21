@@ -1,32 +1,17 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useLanguage } from "@/lib/i18n";
 import Message from "./message";
-import {
-  Paperclip,
-  Send,
-  Smile,
-  Lock,
-  Clock,
-  MoreVertical,
-  Shield,
-  ArrowLeft,
-} from "lucide-react";
+import { Paperclip, Send, Smile, Lock, Clock, MoreVertical, Shield, ArrowLeft } from "lucide-react";
 import type { User, Chat, Message as MessageType } from "@shared/schema";
 
 interface ChatViewProps {
   currentUser: User;
   selectedChat: (Chat & { otherUser: User }) | null;
   messages: MessageType[];
-  onSendMessage: (content: string, type: string, destructTimer: number, file?: File) => void;
+  onSendMessage: (content: string, type: string, destructTimerSeconds: number, file?: File) => void;
   isConnected: boolean;
   onBackToList: () => void;
 }
@@ -65,6 +50,11 @@ export default function ChatView({
     if (selectedChat) setTimeout(() => scrollToBottom(false), 120);
   }, [selectedChat]);
 
+  const getTimerSeconds = () => {
+    const s = parseInt(destructTimer, 10);
+    return Number.isFinite(s) ? s : 300;
+  };
+
   const handleSendMessage = () => {
     const text = messageInput.trim();
     if (!text || !selectedChat) return;
@@ -74,7 +64,7 @@ export default function ChatView({
       return;
     }
 
-    onSendMessage(text, "text", parseInt(destructTimer, 10));
+    onSendMessage(text, "text", getTimerSeconds());
     setMessageInput("");
     setTimeout(() => scrollToBottom(true), 50);
   };
@@ -101,17 +91,20 @@ export default function ChatView({
       return;
     }
 
+    const secs = getTimerSeconds();
+
     if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = reader.result as string;
-        // images: ms (weil base64 groß -> timer in ms war bei dir so)
-        onSendMessage(base64, "image", parseInt(destructTimer, 10) * 1000);
+        // ✅ Timer in SEKUNDEN (nicht ms)
+        onSendMessage(base64, "image", secs, file);
       };
       reader.onerror = () => alert(t("failedToReadFile"));
       reader.readAsDataURL(file);
     } else {
-      onSendMessage(`📎 ${file.name}`, "file", parseInt(destructTimer, 10) * 1000, file);
+      // ✅ Timer in SEKUNDEN (nicht ms)
+      onSendMessage(`📎 ${file.name}`, "file", secs, file);
     }
 
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -179,9 +172,7 @@ export default function ChatView({
             </div>
 
             <div className="min-w-0">
-              <h3 className="font-semibold text-foreground truncate">
-                {selectedChat.otherUser.username}
-              </h3>
+              <h3 className="font-semibold text-foreground truncate">{selectedChat.otherUser.username}</h3>
               <div className="flex items-center gap-2 text-sm min-w-0">
                 <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`} />
                 <span className={isConnected ? "text-green-400" : "text-red-400"}>
@@ -215,12 +206,7 @@ export default function ChatView({
               </Select>
             </div>
 
-            <Button
-              variant="ghost"
-              size="icon"
-              className="w-10 h-10 rounded-full touch-target"
-              aria-label="Menu"
-            >
+            <Button variant="ghost" size="icon" className="w-10 h-10 rounded-full touch-target" aria-label="Menu">
               <MoreVertical className="w-5 h-5" />
             </Button>
           </div>
@@ -240,12 +226,7 @@ export default function ChatView({
         </div>
 
         {messages.map((m) => (
-          <Message
-            key={m.id}
-            message={m}
-            isOwn={m.senderId === currentUser.id}
-            otherUser={selectedChat.otherUser}
-          />
+          <Message key={m.id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
         ))}
 
         {isTyping && (
@@ -325,7 +306,7 @@ export default function ChatView({
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className="opacity-80">⏱️</span>
-            <span className="text-destructive">{formatDestructTimer(parseInt(destructTimer, 10))}</span>
+            <span className="text-destructive">{formatDestructTimer(getTimerSeconds())}</span>
           </div>
         </div>
 
