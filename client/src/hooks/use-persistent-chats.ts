@@ -1,589 +1,317 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { queryClient } from '@/lib/queryClient';
-import type { User, Chat, Message } from '@shared/schema';
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { User, Chat, Message } from "@shared/schema";
 
-// Hook for managing persistent chat contacts and automatic message deletion
+function getAuthToken(): string | null {
+  try {
+    const raw = localStorage.getItem("user");
+    if (!raw) return null;
+    const u = JSON.parse(raw);
+    return u?.token || u?.accessToken || null;
+  } catch {
+    return null;
+  }
+}
+
+async function authedFetch(url: string, init?: RequestInit) {
+  const token = getAuthToken();
+  if (!token) throw new Error("Missing token");
+
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      msg = body?.message || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  return res.json();
+}
+
 export function usePersistentChats(userId?: number, socket?: any) {
-  const [persistentContacts, setPersistentContacts] = useState<Array<Chat & { otherUser: User }>>([]);
+  const [persistentContacts, setPersistentContacts] = useState<Array<Chat & { otherUser: User; unreadCount?: number }>>([]);
   const [activeMessages, setActiveMessages] = useState<Map<number, Message[]>>(new Map());
   const [selectedChat, setSelectedChat] = useState<(Chat & { otherUser: User }) | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<Map<number, number>>(new Map());
-  
-  // Auto-deletion timers for messages
-  const deletionTimersRef = useRef<Map<number, NodeJS.Timeout>>(new Map());
+
+  const deletionTimersRef = useRef<Map<number, any>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load persistent chat contacts (these remain even when messages are deleted)
+  // --------------------------
+  // Helpers
+  // --------------------------
+  const clearTimer = (messageId: number) => {
+    const t = deletionTimersRef.current.get(messageId);
+    if (t) clearTimeout(t);
+    deletionTimersRef.current.delete(messageId);
+  };
+
+  const scheduleMessageDeletion = useCallback((message: Message) => {
+    try {
+      const expiresAtMs = new Date((message as any).expiresAt).getTime();
+      const now = Date.now();
+      const ms = Math.max(expiresAtMs - now, 200);
+
+      clearTimer(message.id);
+
+      const timer = setTimeout(() => {
+        setActiveMessages((prev) => {
+          const next = new Map(prev);
+          const arr = next.get(message.chatId) || [];
+          next.set(message.chatId, arr.filter((m) => m.id !== message.id));
+          return next;
+        });
+        clearTimer(message.id);
+      }, ms);
+
+      deletionTimersRef.current.set(message.id, timer);
+    } catch (e) {
+      console.error("scheduleMessageDeletion error:", e);
+    }
+  }, []);
+
+  // --------------------------
+  // Load contacts + unread
+  // --------------------------
   const loadPersistentContacts = useCallback(async () => {
     if (!userId) return;
-    
+
     setIsLoading(true);
     try {
-      console.log('📋 Loading persistent chat contacts for user:', userId);
-      
-      // Always use regular chats API which includes unread counts
-      let contacts;
-      try {
-        console.log('📋 Loading chats with unread counts from /api/chats/' + userId);
-        const response = await fetch(`/api/chats/${userId}`);
-        if (response.ok) {
-          contacts = await response.json();
-          console.log('🚨 RAW BACKEND RESPONSE:', contacts);
-          console.log('📋 ✅ BACKEND LIEFERT:', contacts.map(c => ({
-            id: c.id,
-            username: c.otherUser?.username,
-            unreadCount: c.unreadCount,
-            unreadCount1: c.unreadCount1,
-            unreadCount2: c.unreadCount2,
-            allKeys: Object.keys(c)
-          })));
-        } else {
-          console.log('📋 Failed to load chats');
-          contacts = [];
-        }
-      } catch (error) {
-        console.log('📋 Error loading contacts, using empty array');
-        contacts = [];
+      const contacts = await authedFetch(`/api/chats/${userId}`);
+
+      // unreadCount sauber setzen
+      const newUnread = new Map<number, number>();
+      (contacts || []).forEach((c: any) => {
+        let unread = 0;
+        if (userId === c.participant1Id) unread = c.unreadCount1 || 0;
+        else if (userId === c.participant2Id) unread = c.unreadCount2 || 0;
+        c.unreadCount = unread;
+        if (unread > 0) newUnread.set(c.id, unread);
+      });
+
+      // WhatsApp Sorting
+      const sorted = (contacts || []).sort((a: any, b: any) => {
+        const aTime = a.lastMessage?.createdAt || a.lastMessageTimestamp || a.createdAt;
+        const bTime = b.lastMessage?.createdAt || b.lastMessageTimestamp || b.createdAt;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      });
+
+      setUnreadCounts(newUnread);
+      setPersistentContacts(sorted);
+
+      // messages für existierende chats laden (optional, aber ok)
+      for (const c of sorted) {
+        await loadActiveMessages(c.id);
       }
-      
-      // Update unread counts map based on chat data
-      if (contacts && contacts.length > 0) {
-        const newUnreadCounts = new Map<number, number>();
-        contacts.forEach((chat: any) => {
-          // CRITICAL FIX: Get the correct unreadCount based on user position
-          let unreadCount = 0;
-          if (userId === chat.participant1Id) {
-            unreadCount = chat.unreadCount1 || 0;
-          } else if (userId === chat.participant2Id) {
-            unreadCount = chat.unreadCount2 || 0;  
-          }
-          
-          console.log(`🔥 CRITICAL UNREAD CALC for chat ${chat.id}:`, {
-            userId,
-            participant1Id: chat.participant1Id,
-            participant2Id: chat.participant2Id,
-            unreadCount1: chat.unreadCount1,
-            unreadCount2: chat.unreadCount2,
-            calculatedUnread: unreadCount
-          });
-          
-          // Store in both chat object and map
-          chat.unreadCount = unreadCount;
-          
-          // FORCE LOG EVERY CALCULATION
-          console.error(`🔥 FORCE SET: Chat ${chat.id} unreadCount = ${unreadCount} (Backend: ${chat.unreadCount1}/${chat.unreadCount2})`);
-          
-          // ALWAYS set the unreadCount, even if 0
-          newUnreadCounts.set(chat.id, unreadCount);
-          console.log(`📊 ALWAYS Setting unread count for chat ${chat.id}: ${unreadCount}`);
-        });
-        setUnreadCounts(newUnreadCounts);
-        console.log('📊 Final unread counts map:', Array.from(newUnreadCounts.entries()));
-      }
-      
-      console.log('📋 Loaded', contacts?.length || 0, 'persistent contacts');
-      console.log('🔄 SETTING CONTACTS STATE:', contacts);
-      
-      // WHATSAPP-STYLE SORTING: Sort by lastMessageTimestamp (newest first)
-      if (contacts && contacts.length > 0) {
-        const sortedContacts = contacts.sort((a: any, b: any) => {
-          // Use lastMessage createdAt if available, otherwise chat's lastMessageTimestamp
-          const aTime = a.lastMessage?.createdAt || a.lastMessageTimestamp || a.createdAt;
-          const bTime = b.lastMessage?.createdAt || b.lastMessageTimestamp || b.createdAt;
-          
-          const aDate = new Date(aTime);
-          const bDate = new Date(bTime);
-          
-          console.log(`📱 WHATSAPP SORT: Chat ${a.id} (${aDate.toLocaleTimeString()}) vs Chat ${b.id} (${bDate.toLocaleTimeString()})`);
-          
-          return bDate.getTime() - aDate.getTime(); // Newest first (WhatsApp style)
-        });
-        
-        console.log('📱 WhatsApp-style sorted chat order:', sortedContacts.map((c: any) => ({
-          chatId: c.id,
-          lastMessageTime: c.lastMessage?.createdAt || c.lastMessageTimestamp || c.createdAt
-        })));
-        
-        setPersistentContacts(sortedContacts);
-      }
-      
-      // ENTFERNT: Force re-render überschreibt Badge-Updates
-      
-      // Load active messages for each contact
-      for (const contact of contacts || []) {
-        await loadActiveMessages(contact.id);
-      }
-      
-    } catch (error) {
-      console.error('❌ Failed to load persistent contacts:', error);
+    } catch (e) {
+      console.error("❌ loadPersistentContacts:", e);
     } finally {
       setIsLoading(false);
     }
   }, [userId]);
 
-  // ECHTZEIT BADGE UPDATE SYSTEM 
-  useEffect(() => {
-    if (!socket?.isConnected || !userId) return;
+  // --------------------------
+  // Load messages
+  // --------------------------
+  const loadActiveMessages = useCallback(
+    async (chatId: number) => {
+      try {
+        // ✅ Auth + richtiger Endpoint (server: /api/chats/:chatId/messages)
+        const msgs = await authedFetch(`/api/chats/${chatId}/messages`);
 
-    const handleMessage = (data: any) => {
-      console.log('📨 ECHTZEIT: WebSocket message received:', data);
-      
-      // If this is a new message for this user, increment unread count SOFORT
-      if ((data.type === 'message' || data.type === 'new_message') && data.message?.receiverId === userId) {
-        const chatId = data.message.chatId;
-        console.log(`🚨 NEUE NACHRICHT für User ${userId} in Chat ${chatId}`);
-        
-        // BACKEND SYNC: Hole den aktuellen unreadCount vom Backend
-        setTimeout(async () => {
-          try {
-            console.log(`🔄 SYNCING: Fetching updated badge count for user ${userId}`);
-            const response = await fetch(`/api/chats/${userId}`);
-            const chatData = await response.json();
-            
-            // Find the specific chat and get its unread count
-            const targetChat = chatData.find((c: any) => c.id === chatId);
-            if (targetChat) {
-              let realUnreadCount = 0;
-              if (userId === targetChat.participant1Id) {
-                realUnreadCount = targetChat.unreadCount1 || 0;
-              } else if (userId === targetChat.participant2Id) {
-                realUnreadCount = targetChat.unreadCount2 || 0;
-              }
-              
-              console.log(`🔥 REAL UNREAD COUNT: Chat ${chatId} = ${realUnreadCount}`);
-              
-              // Update Map with real count
-              setUnreadCounts(prev => {
-                const newCounts = new Map(prev);
-                if (realUnreadCount > 0) {
-                  newCounts.set(chatId, realUnreadCount);
-                } else {
-                  newCounts.delete(chatId);
-                }
-                return newCounts;
-              });
-              
-              // Update chat object with real count
-              setPersistentContacts(prev => {
-                return prev.map(chat => {
-                  if (chat.id === chatId) {
-                    return { ...chat, unreadCount: realUnreadCount };
-                  }
-                  return chat;
-                });
-              });
-              
-              // WHATSAPP SORT: Re-sort contacts when new message arrives  
-              console.log('📱 Re-sorting contacts due to new message...');
-              setTimeout(() => loadPersistentContacts(), 100);
-            }
-          } catch (error) {
-            console.error('Badge sync error:', error);
-          }
-        }, 200);
-        
-        // Load messages for the current chat if it's selected
-        if (selectedChat?.id === chatId) {
-          loadActiveMessages(data.message.chatId);
-        }
-        
-        // ENTFERNT: loadPersistentContacts() überschreibt die lokalen Badge-Updates
-        // Das Backend hat bereits den korrekten unreadCount, Frontend zeigt ihn sofort an
-      }
-    };
-
-    // Register the message handler with the WebSocket
-    if (socket.on) {
-      socket.on('message', handleMessage);
-    } else if (socket.onMessage) {
-      socket.onMessage = handleMessage;
-    } else {
-      console.error("❌ WebSocket socket has no 'on' or 'onMessage' method");
-    }
-    
-    return () => {
-      // Clean up event handlers
-      if (socket.off) {
-        socket.off('message', handleMessage);
-      } else if (socket.onMessage === handleMessage) {
-        socket.onMessage = null;
-      }
-    };
-  }, [socket, userId, selectedChat, loadPersistentContacts]);
-
-  // Schedule automatic message deletion
-  const scheduleMessageDeletion = useCallback((message: Message) => {
-    const deleteTime = new Date(message.expiresAt).getTime();
-    const now = Date.now();
-    const timeUntilDelete = Math.max(deleteTime - now, 1000);
-    
-    console.log(`⏰ SELBSTLÖSCHUNG: Nachricht ${message.id} wird in ${Math.round(timeUntilDelete / 1000)}s gelöscht`);
-    
-    const timer = setTimeout(() => {
-      console.log(`🗑️ SELBSTLÖSCHUNG: Nachricht ${message.id} automatisch gelöscht`);
-      
-      setActiveMessages(prev => {
-        const newMap = new Map(prev);
-        const chatMessages = newMap.get(message.chatId) || [];
-        const filteredMessages = chatMessages.filter(m => m.id !== message.id);
-        newMap.set(message.chatId, filteredMessages);
-        return newMap;
-      });
-      
-      deletionTimersRef.current.delete(message.id);
-    }, timeUntilDelete);
-    
-    deletionTimersRef.current.set(message.id, timer);
-  }, []);
-
-  // Load active (non-expired) messages for a specific chat
-  const loadActiveMessages = useCallback(async (chatId: number) => {
-    try {
-      const response = await fetch(`/api/chats/${chatId}/messages?userId=${userId}`);
-      const messages = await response.json();
-      
-      console.log(`📨 Loaded ${messages.length} active messages for chat ${chatId}`);
-      setActiveMessages(prev => new Map(prev.set(chatId, messages)));
-      
-      // Schedule deletion for each message
-      messages.forEach((message: Message) => {
-        scheduleMessageDeletion(message);
-      });
-      
-    } catch (error) {
-      console.error(`❌ Failed to load messages for chat ${chatId}:`, error);
-      // Set empty array on error
-      setActiveMessages(prev => new Map(prev.set(chatId, [])));
-    }
-  }, [scheduleMessageDeletion, userId]);
-
-
-
-  // Select a chat (activates it and loads messages) - HANDLE NULL FOR MOBILE BACK
-  const selectChat = useCallback(async (chat: (Chat & { otherUser: User }) | null) => {
-    if (!chat) {
-      console.log('🎯 CRITICAL: Clearing selectedChat (mobile back button)');
-      setSelectedChat(null);
-      return;
-    }
-    console.log('🎯 CRITICAL: Selecting chat:', chat.id, 'with user:', chat.otherUser.username);
-    console.log('🎯 CRITICAL: Chat object:', JSON.stringify(chat, null, 2));
-    
-    // IMMEDIATE FORCE UPDATE - NO DELAYS
-    setSelectedChat(chat);
-    console.log('🎯 CRITICAL: setSelectedChat called immediately');
-    
-    // Force multiple state updates to ensure it sticks
-    setTimeout(() => setSelectedChat(chat), 1);
-    setTimeout(() => setSelectedChat(chat), 10);
-    setTimeout(() => setSelectedChat(chat), 50);
-    
-    // Mark chat as active on server
-    try {
-      await fetch(`/api/chats/${chat.id}/activate`, { method: 'POST' });
-    } catch (error) {
-      console.log('Could not mark chat as active:', error);
-    }
-    
-    // Load fresh messages for this chat
-    await loadActiveMessages(chat.id);
-    
-    // Mark chat as read and clear unread count
-    try {
-      await fetch(`/api/chats/${chat.id}/mark-read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
-      });
-    } catch (error) {
-      console.log('Could not mark chat as read:', error);
-    }
-    
-    // SOFORT: Clear unread count for selected chat (Badge Reset)
-    setUnreadCounts(prev => {
-      const newCounts = new Map(prev);
-      newCounts.delete(chat.id);
-      console.log(`🔥 BADGE RESET: Chat ${chat.id} Badge auf 0 gesetzt (Map)`);
-      return newCounts;
-    });
-    
-    // SOFORT: Clear unread count in chat object
-    setPersistentContacts(prev => {
-      return prev.map(c => {
-        if (c.id === chat.id) {
-          console.log(`🔥 BADGE RESET: Chat ${chat.id} Badge auf 0 gesetzt (Object)`);
-          return { ...c, unreadCount: 0 };
-        }
-        return c;
-      });
-    });
-    
-    // Scroll to bottom
-    setTimeout(() => {
-      if (messagesEndRef.current) {
-        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-    }, 100);
-  }, [loadActiveMessages]);
-
-  // Send message with automatic UI deletion scheduling
-  const sendMessage = useCallback(async (
-    content: string,
-    type: string = "text",
-    destructTimer: number, // Use the timer passed from UI
-    file?: File
-  ) => {
-    if (!selectedChat || !userId) {
-      console.error('❌ Cannot send message: no chat selected or user not logged in');
-      return;
-    }
-
-    console.log('📤 Sending message with auto-deletion:', {
-      content: content.substring(0, 20),
-      destructTimer: destructTimer / 1000 + 's',
-      destructTimerMs: destructTimer,
-      chatId: selectedChat.id
-    });
-
-    // Create optimistic message
-    const optimisticMessage: Message = {
-      id: Date.now(), // Temporary ID
-      chatId: selectedChat.id,
-      senderId: userId,
-      receiverId: selectedChat.otherUser.id,
-      content,
-      messageType: type,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + destructTimer).toISOString(),
-    };
-
-    // Add to UI immediately
-    setActiveMessages(prev => {
-      const newMap = new Map(prev);
-      const chatMessages = newMap.get(selectedChat.id) || [];
-      newMap.set(selectedChat.id, [...chatMessages, optimisticMessage]);
-      return newMap;
-    });
-
-    // Schedule deletion for optimistic message
-    scheduleMessageDeletion(optimisticMessage);
-
-    // Scroll to bottom
-    setTimeout(() => {
-      if (messagesEndRef.current) {
-        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-    }, 100);
-
-    // VERSCHLÜSSELUNG: Nachricht vor dem Senden verschlüsseln
-    let encryptedContent = content;
-    try {
-      if (selectedChat.otherUser.publicKey) {
-        const { encryptMessage } = await import('../lib/crypto');
-        encryptedContent = await encryptMessage(content, selectedChat.otherUser.publicKey);
-        console.log('🔒 VERSCHLÜSSELUNG: Nachricht erfolgreich verschlüsselt');
-        console.log(`📏 Original: ${content.length} → Verschlüsselt: ${encryptedContent.length} Zeichen`);
-      } else {
-        console.warn('⚠️ Kein Public Key für Verschlüsselung verfügbar');
-      }
-    } catch (error) {
-      console.error('❌ Verschlüsselungsfehler:', error);
-      // Fallback zu unverschlüsselter Nachricht
-    }
-
-    // Send via WebSocket with correct format
-    if (socket) {
-      const messageData = {
-        type: 'message',
-        chatId: null, // Let server handle chat assignment
-        senderId: userId,
-        receiverId: selectedChat.otherUser.id,
-        content: content, // TEMPORÄR: Sende unverschlüsselt bis Entschlüsselung repariert ist
-        messageType: type,
-        destructTimer,
-      };
-      
-      console.log('📤 Sending WebSocket message:', messageData);
-      
-      // Use the WebSocket send method directly
-      if (socket.send) {
-        socket.send(JSON.stringify(messageData));
-      } else if (socket.emit) {
-        socket.emit('message', messageData);
-      } else {
-        console.error('❌ WebSocket has no send method available');
-      }
-      
-      console.log('📤 Message sent via WebSocket for persistent chat system');
-    } else {
-      console.error('❌ No WebSocket connection available');
-    }
-  }, [selectedChat, userId, socket, scheduleMessageDeletion]);
-
-  // Handle incoming messages from WebSocket
-  useEffect(() => {
-    if (!socket || !userId) return;
-
-    const handleIncomingMessage = (data: any) => {
-      console.log('📥 Raw WebSocket data received:', data);
-      
-      if (data.type === 'new_message' && data.message) {
-        const message = data.message;
-        
-        console.log('📥 Processing incoming message:', {
-          messageId: message.id,
-          chatId: message.chatId,
-          from: message.senderId,
-          to: message.receiverId,
-          content: message.content?.substring(0, 30)
+        setActiveMessages((prev) => {
+          const next = new Map(prev);
+          next.set(chatId, Array.isArray(msgs) ? msgs : []);
+          return next;
         });
 
-        // Only handle messages TO this user (not sent BY this user)
-        if (message.receiverId === userId && message.senderId !== userId) {
-          console.log('✅ Message is for current user, processing...');
-          
-          // Add to active messages immediately
-          setActiveMessages(prev => {
-            const newMap = new Map(prev);
-            const chatMessages = newMap.get(message.chatId) || [];
-            
-            // Check for duplicates
-            const messageExists = chatMessages.some(m => m.id === message.id);
-            if (!messageExists) {
-              const updatedMessages = [...chatMessages, message];
-              newMap.set(message.chatId, updatedMessages);
-              console.log(`📥 Added message to chat ${message.chatId}, total messages: ${updatedMessages.length}`);
-            } else {
-              console.log('⚠️ Message already exists, skipping duplicate');
-            }
-            
-            return newMap;
-          });
-
-          // Schedule deletion
-          scheduleMessageDeletion(message);
-
-          // Reload persistent contacts to include new chat
-          loadPersistentContacts();
-
-          // 📱 WhatsApp-Style: NUR Chat-Liste aktualisieren, NICHT automatisch öffnen
-          setUnreadCounts(prev => {
-            const newCounts = new Map(prev);
-            const currentCount = newCounts.get(message.chatId) || 0;
-            newCounts.set(message.chatId, currentCount + 1);
-            console.log(`📊 WhatsApp-Style: Ungelesene Nachrichten für Chat ${message.chatId}: ${currentCount + 1}`);
-            return newCounts;
-          });
-          
-          // Chat-Liste aktualisieren ohne Chat zu öffnen
-          setTimeout(async () => {
-            console.log('📱 WhatsApp-Style: Aktualisiere Chat-Liste für neue Nachricht');
-            await loadPersistentContacts();
-          }, 100);
-
-          // Scroll to bottom
-          setTimeout(() => {
-            if (messagesEndRef.current) {
-              messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-            }
-          }, 300);
-        } else {
-          console.log('⏭️ Message not for current user, skipping');
-        }
-      } else {
-        console.log('⏭️ Not a new_message type, ignoring');
+        (Array.isArray(msgs) ? msgs : []).forEach((m: Message) => scheduleMessageDeletion(m));
+      } catch (e) {
+        console.error(`❌ loadActiveMessages chat=${chatId}:`, e);
+        setActiveMessages((prev) => {
+          const next = new Map(prev);
+          next.set(chatId, []);
+          return next;
+        });
       }
-    };
+    },
+    [scheduleMessageDeletion]
+  );
 
-    // Listen to WebSocket messages with proper event handling
-    if (socket && socket.on) {
-      socket.on('message', handleIncomingMessage);
-      console.log('🔊 WebSocket message listener registered for user', userId);
-    } else {
-      console.warn('⚠️ WebSocket not available or no event listener support');
-    }
-    
-    return () => {
-      if (socket && socket.off) {
-        socket.off('message', handleIncomingMessage);
-        console.log('🔇 WebSocket message listener removed for user', userId);
+  // --------------------------
+  // Select chat
+  // --------------------------
+  const selectChat = useCallback(
+    async (chat: (Chat & { otherUser: User }) | null) => {
+      setSelectedChat(chat);
+
+      if (!chat || !userId) return;
+
+      // mark-read (auth)
+      try {
+        await authedFetch(`/api/chats/${chat.id}/mark-read`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } catch (e) {
+        console.log("mark-read failed:", e);
       }
-    };
-  }, [socket, userId, scheduleMessageDeletion, persistentContacts, selectedChat, loadPersistentContacts]);
 
-  // Load persistent contacts on mount and user change
+      // local badge reset
+      setUnreadCounts((prev) => {
+        const next = new Map(prev);
+        next.delete(chat.id);
+        return next;
+      });
+      setPersistentContacts((prev) =>
+        prev.map((c: any) => (c.id === chat.id ? { ...c, unreadCount: 0 } : c))
+      );
+
+      await loadActiveMessages(chat.id);
+
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 50);
+    },
+    [userId, loadActiveMessages]
+  );
+
+  // --------------------------
+  // Send message (SECONDS!)
+  // --------------------------
+  const sendMessage = useCallback(
+    async (content: string, type: string = "text", destructTimerSec: number, file?: File) => {
+      if (!selectedChat || !userId) {
+        console.error("❌ sendMessage: no selectedChat or no userId");
+        return;
+      }
+      if (!socket?.send) {
+        console.error("❌ sendMessage: no socket");
+        return;
+      }
+
+      const secs = Math.max(Number(destructTimerSec) || 0, 5);
+
+      // optimistic
+      const optimistic: any = {
+        id: Date.now(),
+        chatId: selectedChat.id,
+        senderId: userId,
+        receiverId: selectedChat.otherUser.id,
+        content,
+        messageType: type,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + secs * 1000).toISOString(),
+      };
+
+      setActiveMessages((prev) => {
+        const next = new Map(prev);
+        const arr = next.get(selectedChat.id) || [];
+        next.set(selectedChat.id, [...arr, optimistic]);
+        return next;
+      });
+      scheduleMessageDeletion(optimistic);
+
+      // ✅ WebSocket send OBJECT (nicht JSON.stringify!)
+      const wsPayload = {
+        type: "message",
+        chatId: selectedChat.id, // ✅ schick chatId mit
+        senderId: userId,
+        receiverId: selectedChat.otherUser.id,
+        content,
+        messageType: type,
+        destructTimer: secs, // ✅ SEKUNDEN
+      };
+
+      console.log("📤 WS send:", wsPayload);
+      const ok = socket.send(wsPayload);
+
+      if (!ok) {
+        console.warn("⚠️ WS not open -> queued (useWebSocketReliable queues)");
+      }
+    },
+    [selectedChat, userId, socket, scheduleMessageDeletion]
+  );
+
+  // --------------------------
+  // Incoming messages (WS)
+  // --------------------------
   useEffect(() => {
-    if (userId) {
-      loadPersistentContacts();
-    }
+    if (!socket?.on || !userId) return;
+
+    const onMsg = (data: any) => {
+      if (data?.type !== "new_message" || !data.message) return;
+
+      const m: any = data.message;
+
+      // ✅ nur wenn an mich
+      if (m.receiverId !== userId) return;
+
+      setActiveMessages((prev) => {
+        const next = new Map(prev);
+        const arr = next.get(m.chatId) || [];
+        if (!arr.some((x: any) => x.id === m.id)) {
+          next.set(m.chatId, [...arr, m]);
+        }
+        return next;
+      });
+
+      scheduleMessageDeletion(m);
+
+      // badge up (wenn chat nicht offen)
+      if (!selectedChat || selectedChat.id !== m.chatId) {
+        setUnreadCounts((prev) => {
+          const next = new Map(prev);
+          const c = next.get(m.chatId) || 0;
+          next.set(m.chatId, c + 1);
+          return next;
+        });
+      }
+
+      // contacts refresh (last message etc.)
+      setTimeout(() => loadPersistentContacts(), 100);
+    };
+
+    socket.on("message", onMsg);
+    return () => socket.off?.("message", onMsg);
+  }, [socket, userId, scheduleMessageDeletion, selectedChat, loadPersistentContacts]);
+
+  // --------------------------
+  // Initial load
+  // --------------------------
+  useEffect(() => {
+    if (userId) loadPersistentContacts();
   }, [userId, loadPersistentContacts]);
 
-  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
-      deletionTimersRef.current.forEach(timer => clearTimeout(timer));
+      deletionTimersRef.current.forEach((t) => clearTimeout(t));
       deletionTimersRef.current.clear();
     };
   }, []);
 
-  // Get messages for selected chat
-  const messages = selectedChat ? (activeMessages.get(selectedChat.id) || []) : [];
-
-  // WhatsApp-style: Chat als gelesen markieren beim Öffnen
-  const markChatAsRead = useCallback((chatId: number) => {
-    setUnreadCounts(prev => {
-      const newCounts = new Map(prev);
-      if (newCounts.has(chatId)) {
-        console.log(`📖 Chat ${chatId} als gelesen markiert`);
-        newCounts.delete(chatId);
-      }
-      return newCounts;
-    });
-  }, []);
-
-  // Erweiterte selectChat Funktion mit WhatsApp-Style read marking
-  const selectChatWithReadMarking = useCallback(async (chat: (Chat & { otherUser: User }) | null) => {
-    console.log('🎯 CHATVIEW RENDER:', {
-      selectedChat: chat?.id || 'NULL',
-      otherUser: chat?.otherUser.username || 'NULL',
-      hasMessages: chat ? (activeMessages.get(chat.id)?.length || 0) : 0
-    });
-    
-    setSelectedChat(chat);
-    
-    if (chat) {
-      // WhatsApp-Style: Als gelesen markieren
-      markChatAsRead(chat.id);
-      
-      // Mark chat as active
-      try {
-        await fetch(`/api/chats/${chat.id}/activate`, { method: 'POST' });
-      } catch (error) {
-        console.error('Failed to activate chat:', error);
-      }
-      
-      // Load fresh messages when selecting a chat
-      await loadActiveMessages(chat.id);
-      
-      // Scroll to bottom after selecting
-      setTimeout(() => {
-        if (messagesEndRef.current) {
-          messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        }
-      }, 100);
-    }
-  }, [loadActiveMessages, activeMessages, markChatAsRead]);
+  const messages = selectedChat ? activeMessages.get(selectedChat.id) || [] : [];
 
   return {
     persistentContacts,
     messages,
     selectedChat,
     isLoading,
-    selectChat: selectChatWithReadMarking,
+    selectChat,
     sendMessage,
     messagesEndRef,
     loadPersistentContacts,
-    unreadCounts, // WhatsApp-style unread counts
+    unreadCounts,
   };
 }
