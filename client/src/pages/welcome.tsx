@@ -133,7 +133,6 @@ export default function WelcomePage() {
         throw new Error((data as any)?.message || t("loginFailed"));
       }
 
-      // privateKey aus localStorage holen (falls schon vorhanden)
       const existing = localStorage.getItem("user");
       let privateKey = "";
 
@@ -144,7 +143,6 @@ export default function WelcomePage() {
         } catch {}
       }
 
-      // Wenn kein privateKey vorhanden: neu erzeugen
       if (!privateKey) {
         const kp = await generateKeyPair();
         privateKey = kp.privateKey;
@@ -198,14 +196,11 @@ export default function WelcomePage() {
     try {
       const { publicKey, privateKey } = await generateKeyPair();
 
-      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>(
-        "/api/register",
-        {
-          username: finalUsername,
-          password: registerPassword,
-          publicKey,
-        }
-      );
+      const data = await postJson<ApiOk<{ id: number; username: string; publicKey: string }> | ApiErr>("/api/register", {
+        username: finalUsername,
+        password: registerPassword,
+        publicKey,
+      });
 
       if (!isObject(data) || (data as any).ok !== true) {
         throw new Error((data as any)?.message || t("registrationFailed"));
@@ -231,12 +226,12 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center px-3 py-4 sm:px-4 sm:py-8">
       <div className="max-w-6xl w-full space-y-6 sm:space-y-8">
         <div className="text-center">
-          {/* ✅ FIX: object-contain + padding, Hintergrund neutral */}
-          <div className="mx-auto h-32 w-32 sm:h-40 sm:w-40 rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg bg-transparent">
+          {/* ✅ Größeres Logo ohne Cropping */}
+          <div className="mx-auto h-44 w-44 sm:h-52 sm:w-52 bg-primary rounded-2xl flex items-center justify-center mb-4 sm:mb-6 overflow-hidden shadow-lg">
             <img
               src={logoPath}
               alt="VelumChat Logo"
-              className="w-full h-full object-contain p-3"
+              className="w-full h-full object-contain p-1"
               draggable={false}
             />
           </div>
