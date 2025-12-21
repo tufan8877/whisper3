@@ -39,11 +39,11 @@ function safeJson(res: any, status: number, payload: any) {
 function normalizeDestructTimerSeconds(raw: any) {
   let t = toInt(raw, 86400);
 
-  // Wenn client ms sendet -> in sekunden umrechnen
+  // falls mal ms geliefert wird
   if (t > 100000) t = Math.floor(t / 1000);
 
   if (t < 5) t = 5;
-  const max = 7 * 24 * 60 * 60;
+  const max = 7 * 24 * 60 * 60; // 1 week
   if (t > max) t = max;
   return t;
 }
@@ -114,7 +114,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const publicKey = String(req.body?.publicKey || "");
 
       if (!username || !password || !publicKey) {
-        return safeJson(res, 400, { ok: false, message: "Username, password, and publicKey are required" });
+        return safeJson(res, 400, {
+          ok: false,
+          message: "Username, password, and publicKey are required",
+        });
       }
       if (password.length < 6) {
         return safeJson(res, 400, { ok: false, message: "Password too short (min 6)" });
@@ -184,8 +187,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const q = String(req.query?.q || "").trim();
       const excludeId = req.auth?.userId ?? 0;
       if (!q) return res.json([]);
-      const found = await storage.searchUsers(q, excludeId);
-      return res.json(found);
+      const users = await storage.searchUsers(q, excludeId);
+      return res.json(users);
     } catch (err) {
       console.error("Search users error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to search users" });
@@ -197,15 +200,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const participant1Id = toInt(req.body?.participant1Id, 0);
       const participant2Id = toInt(req.body?.participant2Id, 0);
 
+      // ✅ only allow the logged-in user to be participant1
       if (participant1Id !== req.auth.userId) {
         return safeJson(res, 403, { ok: false, message: "Forbidden" });
       }
 
       if (!participant1Id || !participant2Id) {
-        return safeJson(res, 400, { ok: false, message: "participant1Id and participant2Id are required" });
+        return safeJson(res, 400, {
+          ok: false,
+          message: "participant1Id and participant2Id are required",
+        });
       }
 
       const chat = await storage.getOrCreateChatByParticipants(participant1Id, participant2Id);
+
+      // OPTIONAL: wenn er vorher gelöscht war, wieder sichtbar machen
+      // (sonst könnte "Chat erstellen" ok sein, aber nicht in Liste erscheinen)
+      try {
+        const wasDeleted = await storage.isChatDeletedForUser(participant1Id, chat.id);
+        if (wasDeleted) await storage.reactivateChatForUser(participant1Id, chat.id);
+      } catch {}
+
       return res.json({ ok: true, chat });
     } catch (err) {
       console.error("Create chat error:", err);
@@ -219,8 +234,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userId !== req.auth.userId) {
         return safeJson(res, 403, { ok: false, message: "Forbidden" });
       }
-      const list = await storage.getChatsByUserId(userId);
-      return res.json(list);
+      const chats = await storage.getChatsByUserId(userId);
+      return res.json(chats);
     } catch (err) {
       console.error("Get chats error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to fetch chats" });
@@ -228,8 +243,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
-   * ✅ FIX: Messages endpoint muss deletedAt berücksichtigen:
-   * Wenn User Chat gelöscht hat -> nur Messages NACH deletedAt zurückgeben.
+   * ✅ FIX: Wenn User Chat gelöscht hat (deletedAt),
+   * dürfen alte Nachrichten NIE wieder erscheinen.
+   *
+   * Wir filtern serverseitig: createdAt > deletedAt
    */
   app.get("/api/chats/:chatId/messages", requireAuth, async (req: any, res) => {
     try {
@@ -238,17 +255,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const userId = req.auth.userId;
 
-      // deletedAt cutoff holen
       const deletedAt = await storage.getDeletedAtForUserChat(userId, chatId);
+      const msgs = await storage.getMessagesByChat(chatId);
 
-      let msgs = await storage.getMessagesByChat(chatId);
+      const filtered = deletedAt
+        ? msgs.filter((m: any) => new Date(m.createdAt).getTime() > new Date(deletedAt).getTime())
+        : msgs;
 
-      if (deletedAt) {
-        const cutoff = deletedAt.getTime();
-        msgs = msgs.filter((m: any) => new Date(m.createdAt).getTime() > cutoff);
-      }
-
-      return res.json(msgs);
+      return res.json(filtered);
     } catch (err) {
       console.error("Get messages error:", err);
       return safeJson(res, 500, { ok: false, message: "Failed to fetch messages" });
@@ -269,10 +283,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  /**
-   * ✅ Chat "delete" = set deletedAt timestamp (cutoff)
-   * (nicht hart löschen)
-   */
   app.post("/api/chats/:chatId/delete", requireAuth, async (req: any, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
@@ -334,6 +344,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     perMessageDeflate: false,
   });
 
+  // heartbeat
   setInterval(() => {
     wss.clients.forEach((client: any) => {
       if (client.isAlive === false) return client.terminate();
@@ -342,6 +353,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   }, 30000);
 
+  // cleanup expired messages
   setInterval(async () => {
     try {
       const deletedCount = await storage.deleteExpiredMessages();
@@ -365,7 +377,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const xff = req.headers["x-forwarded-for"];
     const ip =
-      typeof xff === "string" && xff.length > 0 ? xff.split(",")[0].trim() : req.socket?.remoteAddress || "unknown";
+      typeof xff === "string" && xff.length > 0
+        ? xff.split(",")[0].trim()
+        : req.socket?.remoteAddress || "unknown";
 
     const curr = ipConnCount.get(ip) ?? 0;
     if (curr >= MAX_CONNS_PER_IP) {
@@ -436,7 +450,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           const receiverClient = connectedClients.get(receiverId);
           if (receiverClient?.ws?.readyState === WebSocket.OPEN) {
-            receiverClient.ws.send(JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping }));
+            receiverClient.ws.send(
+              JSON.stringify({ type: "typing", chatId, senderId, receiverId, isTyping })
+            );
           }
           return;
         }
@@ -481,9 +497,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            // ✅ WICHTIG: NICHT MEHR reactivateChatForUser()
-            // Wenn receiver den Chat gelöscht hat, bleibt deletedAt bestehen.
-            // Dadurch bekommt er beim Laden nur Messages NACH deletedAt.
+            // ✅ FIX: re-activate deleted chat for receiver AND sender if needed
+            const wasDeletedReceiver = await storage.isChatDeletedForUser(receiverId, chat.id);
+            if (wasDeletedReceiver) await storage.reactivateChatForUser(receiverId, chat.id);
+
+            const wasDeletedSender = await storage.isChatDeletedForUser(senderId, chat.id);
+            if (wasDeletedSender) await storage.reactivateChatForUser(senderId, chat.id);
 
             const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
             const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
@@ -496,12 +515,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
               messageType: (validatedMessage as any).messageType,
               fileName: (validatedMessage as any).fileName,
               fileSize: (validatedMessage as any).fileSize,
+              destructTimer: destructTimerSec as any, // falls schema es braucht
+              isRead: false as any,
               expiresAt,
             } as any);
 
             await storage.updateChatLastMessage(chat.id, (newMessage as any).id);
 
-            ws.send(JSON.stringify({ type: "message_sent", ok: true, messageId: (newMessage as any).id, chatId: chat.id }));
+            ws.send(
+              JSON.stringify({
+                type: "message_sent",
+                ok: true,
+                messageId: (newMessage as any).id,
+                chatId: chat.id,
+              })
+            );
 
             const payload = { type: "new_message", message: newMessage };
 
