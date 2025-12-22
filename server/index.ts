@@ -6,7 +6,6 @@ const app = express();
 
 /**
  * ✅ HARD FAIL wenn wichtige ENV fehlt
- * Sonst bekommst du später "secretOrPrivateKey must have a value"
  */
 const REQUIRED_ENVS = ["DATABASE_URL", "JWT_SECRET"] as const;
 for (const k of REQUIRED_ENVS) {
@@ -20,8 +19,6 @@ app.use(express.urlencoded({ extended: false }));
 
 /**
  * ✅ CORS (korrekt für credentials: "include")
- * - Kein "*", wenn Cookies/Sessions/JWT-Cookies genutzt werden
- * - Allow-Credentials muss true sein
  */
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -38,7 +35,7 @@ app.use((req, res, next) => {
 
   res.header("Vary", "Origin");
   res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.header(
     "Access-Control-Allow-Headers",
     "Origin, X-Requested-With, Content-Type, Accept, Authorization"
@@ -49,8 +46,7 @@ app.use((req, res, next) => {
 });
 
 /**
- * ✅ API-GUARD: verhindert, dass /api/* jemals in SPA/Vite-Fallback landet
- * und gibt bei kaputten URLs sauber JSON zurück.
+ * ✅ API-GUARD
  */
 app.use("/api", (req, res, next) => {
   const u = req.originalUrl || req.url || "";
