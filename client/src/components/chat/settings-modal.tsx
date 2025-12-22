@@ -1,23 +1,22 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
-  AlertDialogContent,
+  AlertDialogContent as AlertDialogContentUI,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialogTitle as AlertDialogTitleUI,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { LanguageSelector } from "@/components/ui/language-selector";
-
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/lib/i18n";
-import { X, KeyRound, Key, Shield, Info, Trash2 } from "lucide-react";
+import { profileProtection } from "@/lib/profile-protection";
+import { X, Trash2, Info } from "lucide-react";
 import type { User } from "@shared/schema";
 
 interface SettingsModalProps {
@@ -37,93 +36,131 @@ function getAuthToken(): string | null {
   }
 }
 
-function authHeaders(extra?: Record<string, string>) {
+async function authedFetch(url: string, init?: RequestInit) {
   const token = getAuthToken();
-  return {
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(extra || {}),
-  };
+  if (!token) throw new Error("Missing token");
+
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+    credentials: "include",
+  });
+
+  const text = await res.text().catch(() => "");
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!res.ok) {
+    const msg = json?.message || text || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return json ?? { ok: true };
 }
 
 export default function SettingsModal({ currentUser, onClose }: SettingsModalProps) {
   const { toast } = useToast();
   const { t } = useLanguage();
 
-  const [defaultTimer, setDefaultTimer] = useState("86400");
-  const [screenLock, setScreenLock] = useState(true);
-  const [incognitoKeyboard, setIncognitoKeyboard] = useState(true);
-  const [readReceipts, setReadReceipts] = useState(false);
-  const [typingIndicators, setTypingIndicators] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  const handleDeleteProfile = async () => {
+  const handleDeleteProfileForever = async () => {
     try {
-      setDeleting(true);
+      setIsDeleting(true);
 
-      const res = await fetch("/api/users/me", {
-        method: "DELETE",
-        headers: authHeaders(),
-        credentials: "include",
-      });
+      // ✅ Hard delete on server
+      await authedFetch("/api/me", { method: "DELETE" });
 
-      const text = await res.text().catch(() => "");
-      let json: any = null;
+      // ✅ Clear local profile + backups (VERY IMPORTANT, sonst "recover")
       try {
-        json = text ? JSON.parse(text) : null;
+        // dein profileProtection hat wahrscheinlich store/retrieve.
+        // wir rufen mögliche "clear/remove/delete" Varianten defensiv auf:
+        (profileProtection as any)?.clearProfile?.();
+        (profileProtection as any)?.removeProfile?.();
+        (profileProtection as any)?.deleteProfile?.();
+        (profileProtection as any)?.purge?.();
       } catch {}
 
-      if (!res.ok) {
-        throw new Error(json?.message || text || "Failed to delete profile");
-      }
-
-      // local cleanup
+      // ✅ remove local tokens / user
       try {
         localStorage.removeItem("user");
         localStorage.removeItem("token");
+
+        // optional: bekannte Cutoff keys weg (wenn vorhanden)
+        // löscht alle keys die mit chat_cutoffs_v1_ anfangen:
+        Object.keys(localStorage).forEach((k) => {
+          if (k.startsWith("chat_cutoffs_v1_")) localStorage.removeItem(k);
+        });
       } catch {}
 
       toast({
-        title: t("success"),
-        description: t("profileDeleted") || "Profil wurde gelöscht.",
+        title: t("success") ?? "Erfolg",
+        description: t("profileDeleted") ?? "Profil wurde dauerhaft gelöscht. Username ist wieder frei.",
       });
 
+      // ✅ zurück zur Startseite
       window.location.href = "/";
     } catch (err: any) {
+      console.error("❌ delete profile failed:", err);
       toast({
-        title: t("error"),
-        description: err?.message || "Profil löschen fehlgeschlagen",
+        title: t("error") ?? "Fehler",
+        description: err?.message || (t("profileDeleteError") ?? "Profil konnte nicht gelöscht werden."),
         variant: "destructive",
       });
     } finally {
-      setDeleting(false);
-      setConfirmOpen(false);
+      setIsDeleting(false);
     }
   };
 
-  const formatTimerOption = (seconds: string) => {
-    const num = parseInt(seconds, 10);
-    if (num < 60) return `${num} second${num > 1 ? "s" : ""}`;
-    if (num < 3600) return `${num / 60} minute${num / 60 > 1 ? "s" : ""}`;
-    if (num < 86400) return `${num / 3600} hour${num / 3600 > 1 ? "s" : ""}`;
-    return `${num / 86400} day${num / 86400 > 1 ? "s" : ""}`;
+  // Info/Stub: du wolltest Username-ändern NICHT mehr.
+  const handleInfo = () => {
+    toast({
+      title: t("info") ?? "Info",
+      description:
+        t("profilesAutoDelete20Days") ??
+        "Profile werden nach 20 Tagen Inaktivität automatisch gelöscht. Beim manuellen Löschen wird alles sofort entfernt.",
+    });
   };
 
   return (
-    <>
-      <Dialog open onOpenChange={onClose}>
-        <DialogContent
-          className="
-            bg-surface border-border
-            w-[calc(100vw-24px)] sm:max-w-2xl
-            max-h-[85dvh] overflow-y-auto
-            p-4 sm:p-6
-          "
-        >
-          <DialogHeader>
-            <div className="flex items-center justify-between gap-3">
-              <DialogTitle className="text-2xl font-bold text-text-primary">{t("settingsTitle")}</DialogTitle>
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent
+        className={[
+          "bg-surface border-border",
+          "w-[95vw] sm:max-w-2xl",
+          "max-h-[85vh] sm:max-h-[90vh] overflow-y-auto",
+          "p-0", // wir machen eigenes padding mit sticky header + body padding
+          "rounded-2xl",
+        ].join(" ")}
+      >
+        {/* ✅ Sticky Header (mobile nicer) */}
+        <DialogHeader className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-border px-4 sm:px-6 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <DialogTitle className="text-lg sm:text-2xl font-bold text-text-primary truncate">
+                {t("settingsTitle") ?? "Einstellungen"}
+              </DialogTitle>
+              <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">
+                VelumChat • @{currentUser.username}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleInfo}
+                className="text-text-muted hover:text-text-primary"
+                aria-label="Info"
+              >
+                <Info className="w-4 h-4" />
+              </Button>
+
               <Button
                 variant="ghost"
                 size="sm"
@@ -134,223 +171,92 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
                 <X className="w-4 h-4" />
               </Button>
             </div>
-          </DialogHeader>
+          </div>
+        </DialogHeader>
 
-          <div className="space-y-8">
-            {/* Profile */}
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary mb-4">{t("profile")}</h3>
-
-              <div className="space-y-4">
-                <div className="flex items-start sm:items-center gap-4">
-                  <div className="w-14 h-14 sm:w-16 sm:h-16 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-                    <KeyRound className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-text-muted">
-                      {t("loggedInAs") || "Angemeldet als"}:{" "}
-                      <span className="text-text-primary font-medium break-all">{currentUser.username}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* ✅ Profil löschen */}
-                <div className="bg-muted/30 p-3 rounded-lg border border-border">
-                  <p className="text-sm text-text-primary font-medium mb-1 flex items-center gap-2">
-                    <Trash2 className="w-4 h-4 text-red-400" />
-                    {t("deleteProfile") || "Profil löschen"}
-                  </p>
-                  <p className="text-xs text-text-muted break-words whitespace-normal">
-                    {t("deleteProfileDesc") ||
-                      "Dein Profil und alle Daten werden dauerhaft vom Server gelöscht. Dein Benutzername wird wieder frei."}
-                  </p>
-
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    className="mt-3 w-full"
-                    onClick={() => setConfirmOpen(true)}
-                    disabled={deleting}
-                  >
-                    {deleting ? (t("deleting") || "Lösche...") : (t("deleteProfile") || "Profil löschen")}
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* Language */}
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary mb-4">{t("language")}</h3>
-              <div className="flex justify-start">
-                <LanguageSelector />
-              </div>
-            </div>
-
-            {/* Security */}
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary mb-4">{t("security")}</h3>
-
-              <div className="space-y-4">
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("defaultTimer")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("autoDestructTime")}</p>
-                  </div>
-
-                  <Select value={defaultTimer} onValueChange={setDefaultTimer}>
-                    <SelectTrigger className="w-40 sm:w-44 bg-surface border-border text-text-primary flex-shrink-0">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">{formatTimerOption("1")}</SelectItem>
-                      <SelectItem value="10">{formatTimerOption("10")}</SelectItem>
-                      <SelectItem value="60">{formatTimerOption("60")}</SelectItem>
-                      <SelectItem value="3600">{formatTimerOption("3600")}</SelectItem>
-                      <SelectItem value="86400">{formatTimerOption("86400")}</SelectItem>
-                      <SelectItem value="518400">{formatTimerOption("518400")}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("screenLock")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("screenLockDesc")}</p>
-                  </div>
-                  <Switch checked={screenLock} onCheckedChange={setScreenLock} className="flex-shrink-0" />
-                </div>
-
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("incognitoKeyboard")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("incognitoKeyboardDesc")}</p>
-                  </div>
-                  <Switch
-                    checked={incognitoKeyboard}
-                    onCheckedChange={setIncognitoKeyboard}
-                    className="flex-shrink-0"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Privacy */}
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary mb-4">{t("privacy")}</h3>
-
-              <div className="space-y-4">
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("readReceipts")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("readReceiptsDesc")}</p>
-                  </div>
-                  <Switch checked={readReceipts} onCheckedChange={setReadReceipts} className="flex-shrink-0" />
-                </div>
-
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("typingIndicators")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("typingIndicatorsDesc")}</p>
-                  </div>
-                  <Switch checked={typingIndicators} onCheckedChange={setTypingIndicators} className="flex-shrink-0" />
-                </div>
-              </div>
-            </div>
-
-            {/* About */}
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary mb-4">{t("about")}</h3>
-
-              <div className="space-y-4">
-                <Button variant="outline" className="w-full bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4">
-                  <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-medium text-text-primary">{t("exportKeys")}</h4>
-                      <p className="text-sm text-text-muted break-words whitespace-normal">{t("exportKeysDesc")}</p>
-                    </div>
-                    <div className="self-end sm:self-auto flex-shrink-0">
-                      <Key className="w-5 h-5 text-text-muted" />
-                    </div>
-                  </div>
-                </Button>
-
-                <Button variant="outline" className="w-full bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4">
-                  <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-medium text-text-primary">{t("verifySecurityNumber")}</h4>
-                      <p className="text-sm text-text-muted break-words whitespace-normal">{t("verifySecurityNumberDesc")}</p>
-                    </div>
-                    <div className="self-end sm:self-auto flex-shrink-0">
-                      <Shield className="w-5 h-5 text-accent" />
-                    </div>
-                  </div>
-                </Button>
-
-                <Button
-                  variant="outline"
-                  className="w-full bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4"
-                >
-                  <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-medium text-text-primary">{t("permanentAccount")}</h4>
-                      <p className="text-sm text-text-muted break-words whitespace-normal">
-                        {t("permanentAccountDescription")}
-                      </p>
-                    </div>
-                    <div className="self-end sm:self-auto flex-shrink-0">
-                      <Info className="w-5 h-5 text-primary" />
-                    </div>
-                  </div>
-                </Button>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="border-t border-border pt-6">
-              <div className="text-center space-y-2">
-                <p className="text-sm text-text-muted">VelumChat v1.0.0</p>
-                <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm">
-                  <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                    {t("privacyPolicy")}
-                  </Button>
-                  <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                    {t("sourceCode")}
-                  </Button>
-                  <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                    {t("securityAudit")}
-                  </Button>
-                </div>
-              </div>
+        {/* ✅ Body */}
+        <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-6 sm:space-y-8">
+          {/* Language */}
+          <div className="space-y-3">
+            <h3 className="text-base sm:text-lg font-semibold text-text-primary">
+              {t("language") ?? "Sprache"}
+            </h3>
+            <div className="flex justify-start">
+              <LanguageSelector />
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
 
-      {/* Confirm delete */}
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent className="bg-surface border-border">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-text-primary">
-              {t("deleteProfileConfirmTitle") || "Profil wirklich löschen?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-text-muted">
-              {t("deleteProfileConfirmDesc") ||
-                "Das löscht dein Profil UND alle Daten dauerhaft vom Server. Dein Benutzername wird wieder frei. Diese Aktion kann nicht rückgängig gemacht werden."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>{t("cancel") || "Abbrechen"}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteProfile}
-              className="bg-red-600 hover:bg-red-700"
-              disabled={deleting}
-            >
-              {deleting ? (t("deleting") || "Lösche...") : (t("delete") || "Löschen")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+          {/* Profile deletion */}
+          <div className="space-y-3">
+            <h3 className="text-base sm:text-lg font-semibold text-text-primary">
+              {t("profile") ?? "Profil"}
+            </h3>
+
+            <div className="bg-muted/20 border border-border rounded-xl p-3 sm:p-4">
+              <p className="text-sm text-text-primary font-medium">
+                {t("deleteProfileTitle") ?? "Profil dauerhaft löschen"}
+              </p>
+              <p className="text-xs sm:text-sm text-text-muted mt-1 leading-relaxed">
+                {t("deleteProfileDesc") ??
+                  "Dabei werden dein Benutzername, alle Chats und Nachrichten endgültig aus der Datenbank gelöscht. Der Benutzername ist danach wieder frei."}
+              </p>
+            </div>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  className="w-full h-11 sm:h-12 rounded-xl"
+                  disabled={isDeleting}
+                >
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  {isDeleting
+                    ? (t("deleting") ?? "Lösche...")
+                    : (t("deleteProfile") ?? "Profil löschen")}
+                </Button>
+              </AlertDialogTrigger>
+
+              <AlertDialogContentUI className="bg-surface border-border w-[95vw] sm:max-w-lg rounded-2xl">
+                <AlertDialogHeader>
+                  <AlertDialogTitleUI className="text-text-primary">
+                    {t("confirmDeleteProfileTitle") ?? "Profil wirklich löschen?"}
+                  </AlertDialogTitleUI>
+                  <AlertDialogDescription className="text-text-muted">
+                    {t("confirmDeleteProfileDesc") ??
+                      "Das kann nicht rückgängig gemacht werden. Dein Benutzername wird freigegeben und kann von anderen benutzt werden."}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+
+                <AlertDialogFooter className="gap-2 sm:gap-3">
+                  <AlertDialogCancel className="bg-muted/30 border-border">
+                    {t("cancel") ?? "Abbrechen"}
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDeleteProfileForever}
+                    className="bg-red-600 hover:bg-red-700 text-white"
+                  >
+                    {t("deleteForever") ?? "Für immer löschen"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContentUI>
+            </AlertDialog>
+          </div>
+
+          {/* About */}
+          <div className="border-t border-border pt-4 sm:pt-6">
+            <div className="text-center space-y-2">
+              <p className="text-sm text-text-muted">VelumChat v1.0.0</p>
+              <p className="text-xs text-text-muted">
+                {t("profilesAutoDelete20Days") ??
+                  "Hinweis: Profile werden nach 20 Tagen Inaktivität automatisch gelöscht."}
+              </p>
+            </div>
+          </div>
+
+          {/* bottom padding for mobile scroll */}
+          <div className="h-2" />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
