@@ -46,24 +46,22 @@ export interface IStorage {
   // Search
   searchUsers(query: string, excludeId: number): Promise<User[]>;
 
-  // Block / Deleted chats
+  // Block / Delete chat
   blockUser(blockerId: number, blockedId: number): Promise<void>;
-
   deleteChatForUser(userId: number, chatId: number): Promise<void>;
   getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null>;
-
   isChatDeletedForUser(userId: number, chatId: number): Promise<boolean>;
   reactivateChatForUser(userId: number, chatId: number): Promise<void>;
 
-  // ✅ HARD DELETE PROFILE (Everything)
-  deleteUserHard(userId: number): Promise<void>;
+  // ✅ NEW: HARD DELETE PROFILE
+  deleteUserCompletely(userId: number): Promise<void>;
 
-  // ✅ AUTO DELETE inactive users older than N days (returns how many deleted)
+  // ✅ NEW: AUTO DELETE INACTIVE USERS
   deleteInactiveUsers(daysInactive: number): Promise<number>;
 }
 
 /* =========================================================
-   DATABASE STORAGE (Render / Postgres)
+   DATABASE STORAGE
 ========================================================= */
 class DatabaseStorage implements IStorage {
   // --------------------
@@ -100,11 +98,7 @@ class DatabaseStorage implements IStorage {
   }
 
   async getMessagesByChat(chatId: number): Promise<Message[]> {
-    return await db
-      .select()
-      .from(messages)
-      .where(eq(messages.chatId, chatId))
-      .orderBy(asc(messages.createdAt));
+    return await db.select().from(messages).where(eq(messages.chatId, chatId)).orderBy(asc(messages.createdAt));
   }
 
   async deleteExpiredMessages(): Promise<number> {
@@ -140,16 +134,8 @@ class DatabaseStorage implements IStorage {
         )
       )
       .leftJoin(messages, eq(messages.id, chats.lastMessageId))
-      .leftJoin(
-        deletedChats,
-        and(eq(deletedChats.chatId, chats.id), eq(deletedChats.userId, userId))
-      )
-      .where(
-        and(
-          or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)),
-          isNull(deletedChats.id)
-        )
-      )
+      .leftJoin(deletedChats, and(eq(deletedChats.chatId, chats.id), eq(deletedChats.userId, userId)))
+      .where(and(or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)), isNull(deletedChats.id)))
       .orderBy(desc(chats.lastMessageTimestamp), desc(chats.createdAt));
 
     return rows.map((r) => ({
@@ -199,15 +185,9 @@ class DatabaseStorage implements IStorage {
     if (!chat) return;
 
     if (chat.participant1Id === userId) {
-      await db
-        .update(chats)
-        .set({ unreadCount1: sql`${chats.unreadCount1} + 1` } as any)
-        .where(eq(chats.id, chatId));
+      await db.update(chats).set({ unreadCount1: sql`${chats.unreadCount1} + 1` } as any).where(eq(chats.id, chatId));
     } else if (chat.participant2Id === userId) {
-      await db
-        .update(chats)
-        .set({ unreadCount2: sql`${chats.unreadCount2} + 1` } as any)
-        .where(eq(chats.id, chatId));
+      await db.update(chats).set({ unreadCount2: sql`${chats.unreadCount2} + 1` } as any).where(eq(chats.id, chatId));
     }
   }
 
@@ -239,10 +219,7 @@ class DatabaseStorage implements IStorage {
   // Block / Deleted chats
   // --------------------
   async blockUser(blockerId: number, blockedId: number): Promise<void> {
-    await db
-      .insert(blockedUsers)
-      .values({ blockerId, blockedId } as any)
-      .onConflictDoNothing();
+    await db.insert(blockedUsers).values({ blockerId, blockedId } as any).onConflictDoNothing();
   }
 
   async deleteChatForUser(userId: number, chatId: number): Promise<void> {
@@ -273,60 +250,34 @@ class DatabaseStorage implements IStorage {
   }
 
   async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
-    await db
-      .delete(deletedChats)
-      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+    await db.delete(deletedChats).where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
   }
 
   // =========================================================
-  // ✅ HARD DELETE PROFILE (Everything)
+  // ✅ HARD DELETE PROFILE (User + all related data)
   // =========================================================
-  async deleteUserHard(userId: number): Promise<void> {
-    // Chats, die den User betreffen
-    const userChats = await db
-      .select({ id: chats.id })
-      .from(chats)
-      .where(or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)));
+  async deleteUserCompletely(userId: number): Promise<void> {
+    // Reihenfolge ist wichtig
+    // 1) Messages (alle wo user beteiligt ist)
+    await db.delete(messages).where(or(eq(messages.senderId, userId), eq(messages.receiverId, userId)));
 
-    const chatIds = userChats.map((c) => c.id);
+    // 2) Deleted chats markers
+    await db.delete(deletedChats).where(or(eq(deletedChats.userId, userId)));
 
-    // 1) Messages löschen (nach chatIds)
-    if (chatIds.length > 0) {
-      await db.delete(messages).where(sql`${messages.chatId} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`);
-      // Alternative ohne ANY, falls Driver zickt:
-      // await db.delete(messages).where(or(...chatIds.map(id => eq(messages.chatId, id))));
-    }
+    // 3) Block relations
+    await db.delete(blockedUsers).where(or(eq(blockedUsers.blockerId, userId), eq(blockedUsers.blockedId, userId)));
 
-    // 2) deletedChats Einträge löschen
-    if (chatIds.length > 0) {
-      await db.delete(deletedChats).where(
-        or(
-          eq(deletedChats.userId, userId),
-          sql`${deletedChats.chatId} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`
-        )
-      );
-    } else {
-      await db.delete(deletedChats).where(eq(deletedChats.userId, userId));
-    }
+    // 4) Chats (alle wo user beteiligt ist)
+    await db.delete(chats).where(or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)));
 
-    // 3) blockedUsers Einträge löschen
-    await db
-      .delete(blockedUsers)
-      .where(or(eq(blockedUsers.blockerId, userId), eq(blockedUsers.blockedId, userId)));
-
-    // 4) Chats löschen
-    if (chatIds.length > 0) {
-      await db.delete(chats).where(sql`${chats.id} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`);
-      // Alternative ohne ANY:
-      // await db.delete(chats).where(or(...chatIds.map(id => eq(chats.id, id))));
-    }
-
-    // 5) User löschen (Username wird frei!)
+    // 5) User
     await db.delete(users).where(eq(users.id, userId));
   }
 
   // =========================================================
-  // ✅ AUTO DELETE inactive users older than N days
+  // ✅ AUTO DELETE INACTIVE USERS (> N days)
+  // lastSeen wird bei online/offline updates aktualisiert.
+  // Wir löschen nur wenn isOnline=false.
   // =========================================================
   async deleteInactiveUsers(daysInactive: number): Promise<number> {
     const days = Math.max(1, Number(daysInactive) || 20);
@@ -335,13 +286,18 @@ class DatabaseStorage implements IStorage {
     const inactive = await db
       .select({ id: users.id })
       .from(users)
-      .where(sql`${users.lastSeen} < ${cutoff}`);
+      .where(and(eq(users.isOnline, false), sql`${users.lastSeen} < ${cutoff}`));
 
-    for (const u of inactive) {
-      await this.deleteUserHard(u.id);
+    let deleted = 0;
+    for (const row of inactive) {
+      try {
+        await this.deleteUserCompletely(row.id);
+        deleted++;
+      } catch (e) {
+        console.error("deleteInactiveUsers failed for user", row.id, e);
+      }
     }
-
-    return inactive.length;
+    return deleted;
   }
 }
 
