@@ -38,10 +38,7 @@ function safeJson(res: any, status: number, payload: any) {
 
 function normalizeDestructTimerSeconds(raw: any) {
   let t = toInt(raw, 86400);
-
-  // falls mal ms geliefert wird
-  if (t > 100000) t = Math.floor(t / 1000);
-
+  if (t > 100000) t = Math.floor(t / 1000); // ms -> sec
   if (t < 5) t = 5;
   const max = 7 * 24 * 60 * 60; // 1 week
   if (t > max) t = max;
@@ -180,7 +177,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ---- Protected endpoints (requireAuth) ----
+  // ---- Protected endpoints ----
 
   app.get("/api/search-users", requireAuth, async (req: any, res) => {
     try {
@@ -200,7 +197,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const participant1Id = toInt(req.body?.participant1Id, 0);
       const participant2Id = toInt(req.body?.participant2Id, 0);
 
-      // ✅ only allow the logged-in user to be participant1
       if (participant1Id !== req.auth.userId) {
         return safeJson(res, 403, { ok: false, message: "Forbidden" });
       }
@@ -214,8 +210,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const chat = await storage.getOrCreateChatByParticipants(participant1Id, participant2Id);
 
-      // OPTIONAL: wenn er vorher gelöscht war, wieder sichtbar machen
-      // (sonst könnte "Chat erstellen" ok sein, aber nicht in Liste erscheinen)
       try {
         const wasDeleted = await storage.isChatDeletedForUser(participant1Id, chat.id);
         if (wasDeleted) await storage.reactivateChatForUser(participant1Id, chat.id);
@@ -242,12 +236,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  /**
-   * ✅ FIX: Wenn User Chat gelöscht hat (deletedAt),
-   * dürfen alte Nachrichten NIE wieder erscheinen.
-   *
-   * Wir filtern serverseitig: createdAt > deletedAt
-   */
+  // ✅ messages cutoff filter
   app.get("/api/chats/:chatId/messages", requireAuth, async (req: any, res) => {
     try {
       const chatId = toInt(req.params.chatId, 0);
@@ -311,6 +300,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ============================
+  // ✅ PROFILE DELETE (HARD DELETE)
+  // ============================
+
+  // DELETE /api/me  (empfohlen)
+  app.delete("/api/me", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.auth.userId;
+
+      // Kick websocket client (optional)
+      const client = connectedClients.get(userId);
+      try {
+        client?.ws?.close?.(1000, "Account deleted");
+      } catch {}
+      connectedClients.delete(userId);
+
+      await storage.deleteUserCompletely(userId);
+      return res.json({ ok: true, deleted: true });
+    } catch (err) {
+      console.error("Delete profile error:", err);
+      return safeJson(res, 500, { ok: false, message: "Failed to delete profile" });
+    }
+  });
+
+  // POST /api/me/delete (falls du lieber POST nutzt)
+  app.post("/api/me/delete", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.auth.userId;
+
+      const client = connectedClients.get(userId);
+      try {
+        client?.ws?.close?.(1000, "Account deleted");
+      } catch {}
+      connectedClients.delete(userId);
+
+      await storage.deleteUserCompletely(userId);
+      return res.json({ ok: true, deleted: true });
+    } catch (err) {
+      console.error("Delete profile error:", err);
+      return safeJson(res, 500, { ok: false, message: "Failed to delete profile" });
+    }
+  });
+
   app.post("/api/upload", requireAuth, upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return safeJson(res, 400, { ok: false, message: "No file uploaded" });
@@ -362,6 +394,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("❌ Error during message cleanup:", err);
     }
   }, 300000);
+
+  // ✅ cleanup inactive users (20 days)
+  setInterval(async () => {
+    try {
+      const deletedUsers = await storage.deleteInactiveUsers(20);
+      if (deletedUsers > 0) console.log(`🧹 Auto-deleted ${deletedUsers} inactive user(s) (>20 days)`);
+    } catch (err) {
+      console.error("❌ Error during inactive-user cleanup:", err);
+    }
+  }, 12 * 60 * 60 * 1000); // alle 12h
 
   wss.on("connection", (ws: any, req: any) => {
     const origin = req.headers.origin;
@@ -497,7 +539,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chat = await storage.getOrCreateChatByParticipants(senderId, receiverId);
 
-            // ✅ FIX: re-activate deleted chat for receiver AND sender if needed
             const wasDeletedReceiver = await storage.isChatDeletedForUser(receiverId, chat.id);
             if (wasDeletedReceiver) await storage.reactivateChatForUser(receiverId, chat.id);
 
@@ -515,7 +556,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               messageType: (validatedMessage as any).messageType,
               fileName: (validatedMessage as any).fileName,
               fileSize: (validatedMessage as any).fileSize,
-              destructTimer: destructTimerSec as any, // falls schema es braucht
+              destructTimer: destructTimerSec as any,
               isRead: false as any,
               expiresAt,
             } as any);
@@ -541,7 +582,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             break;
           }
-
           default:
             break;
         }
