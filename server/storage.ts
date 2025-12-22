@@ -46,16 +46,20 @@ export interface IStorage {
   // Search
   searchUsers(query: string, excludeId: number): Promise<User[]>;
 
-  // Block / Delete chat
+  // Block / Deleted chats
   blockUser(blockerId: number, blockedId: number): Promise<void>;
 
-  // ✅ Delete with timestamp (cutoff)
   deleteChatForUser(userId: number, chatId: number): Promise<void>;
   getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null>;
 
-  // (legacy helpers)
   isChatDeletedForUser(userId: number, chatId: number): Promise<boolean>;
   reactivateChatForUser(userId: number, chatId: number): Promise<void>;
+
+  // ✅ HARD DELETE PROFILE (Everything)
+  deleteUserHard(userId: number): Promise<void>;
+
+  // ✅ AUTO DELETE inactive users older than N days (returns how many deleted)
+  deleteInactiveUsers(daysInactive: number): Promise<number>;
 }
 
 /* =========================================================
@@ -143,7 +147,7 @@ class DatabaseStorage implements IStorage {
       .where(
         and(
           or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)),
-          isNull(deletedChats.id) // ✅ hide deleted chats in list
+          isNull(deletedChats.id)
         )
       )
       .orderBy(desc(chats.lastMessageTimestamp), desc(chats.createdAt));
@@ -235,38 +239,25 @@ class DatabaseStorage implements IStorage {
   // Block / Deleted chats
   // --------------------
   async blockUser(blockerId: number, blockedId: number): Promise<void> {
-    await db.insert(blockedUsers).values({ blockerId, blockedId } as any).onConflictDoNothing();
+    await db
+      .insert(blockedUsers)
+      .values({ blockerId, blockedId } as any)
+      .onConflictDoNothing();
   }
 
-  /**
-   * ✅ Delete = set deletedAt cutoff
-   * SAFE Version (works even if DB has no unique constraint)
-   */
   async deleteChatForUser(userId: number, chatId: number): Promise<void> {
-    const now = new Date();
-
-    // 1) check if row exists
-    const [existing] = await db
-      .select({ id: deletedChats.id })
-      .from(deletedChats)
-      .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
-
-    if (existing?.id) {
-      // 2) update existing
-      await db
-        .update(deletedChats)
-        .set({ deletedAt: now } as any)
-        .where(eq(deletedChats.id, existing.id));
-      return;
-    }
-
-    // 3) insert new
-    await db.insert(deletedChats).values({ userId, chatId, deletedAt: now } as any);
+    await db
+      .insert(deletedChats)
+      .values({ userId, chatId, deletedAt: new Date() } as any)
+      .onConflictDoUpdate({
+        target: [deletedChats.userId, deletedChats.chatId] as any,
+        set: { deletedAt: new Date() } as any,
+      });
   }
 
   async getDeletedAtForUserChat(userId: number, chatId: number): Promise<Date | null> {
     const [row] = await db
-      .select({ deletedAt: deletedChats.deletedAt })
+      .select({ deletedAt: (deletedChats as any).deletedAt })
       .from(deletedChats)
       .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
 
@@ -275,17 +266,82 @@ class DatabaseStorage implements IStorage {
 
   async isChatDeletedForUser(userId: number, chatId: number): Promise<boolean> {
     const [row] = await db
-      .select({ id: deletedChats.id })
+      .select()
       .from(deletedChats)
       .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
-    return !!row?.id;
+    return !!row;
   }
 
-  // ⚠️ Manuell möglich, wird aber NICHT mehr automatisch beim Senden gemacht.
   async reactivateChatForUser(userId: number, chatId: number): Promise<void> {
     await db
       .delete(deletedChats)
       .where(and(eq(deletedChats.userId, userId), eq(deletedChats.chatId, chatId)));
+  }
+
+  // =========================================================
+  // ✅ HARD DELETE PROFILE (Everything)
+  // =========================================================
+  async deleteUserHard(userId: number): Promise<void> {
+    // Chats, die den User betreffen
+    const userChats = await db
+      .select({ id: chats.id })
+      .from(chats)
+      .where(or(eq(chats.participant1Id, userId), eq(chats.participant2Id, userId)));
+
+    const chatIds = userChats.map((c) => c.id);
+
+    // 1) Messages löschen (nach chatIds)
+    if (chatIds.length > 0) {
+      await db.delete(messages).where(sql`${messages.chatId} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`);
+      // Alternative ohne ANY, falls Driver zickt:
+      // await db.delete(messages).where(or(...chatIds.map(id => eq(messages.chatId, id))));
+    }
+
+    // 2) deletedChats Einträge löschen
+    if (chatIds.length > 0) {
+      await db.delete(deletedChats).where(
+        or(
+          eq(deletedChats.userId, userId),
+          sql`${deletedChats.chatId} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`
+        )
+      );
+    } else {
+      await db.delete(deletedChats).where(eq(deletedChats.userId, userId));
+    }
+
+    // 3) blockedUsers Einträge löschen
+    await db
+      .delete(blockedUsers)
+      .where(or(eq(blockedUsers.blockerId, userId), eq(blockedUsers.blockedId, userId)));
+
+    // 4) Chats löschen
+    if (chatIds.length > 0) {
+      await db.delete(chats).where(sql`${chats.id} = ANY(${sql.raw(`ARRAY[${chatIds.join(",")}]::int[]`)})`);
+      // Alternative ohne ANY:
+      // await db.delete(chats).where(or(...chatIds.map(id => eq(chats.id, id))));
+    }
+
+    // 5) User löschen (Username wird frei!)
+    await db.delete(users).where(eq(users.id, userId));
+  }
+
+  // =========================================================
+  // ✅ AUTO DELETE inactive users older than N days
+  // =========================================================
+  async deleteInactiveUsers(daysInactive: number): Promise<number> {
+    const days = Math.max(1, Number(daysInactive) || 20);
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const inactive = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(sql`${users.lastSeen} < ${cutoff}`);
+
+    for (const u of inactive) {
+      await this.deleteUserHard(u.id);
+    }
+
+    return inactive.length;
   }
 }
 
