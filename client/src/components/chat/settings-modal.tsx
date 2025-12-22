@@ -18,9 +18,7 @@ import { LanguageSelector } from "@/components/ui/language-selector";
 
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/lib/i18n";
-import { profileProtection } from "@/lib/profile-protection";
-import { SessionPersistence } from "@/lib/session-persistence";
-import { X, KeyRound, Key, Shield, Trash2, Info } from "lucide-react";
+import { X, Shield, Trash2, Info, Clock } from "lucide-react";
 import type { User } from "@shared/schema";
 
 interface SettingsModalProps {
@@ -40,34 +38,6 @@ function getAuthToken(): string | null {
   }
 }
 
-async function authedFetch(url: string, init?: RequestInit) {
-  const token = getAuthToken();
-  if (!token) throw new Error("Missing token");
-
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...(init?.headers || {}),
-      Authorization: `Bearer ${token}`,
-      ...(init?.headers?.["Content-Type"] ? {} : {}),
-    } as any,
-    credentials: "include",
-  });
-
-  const text = await res.text().catch(() => "");
-  let json: any = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {}
-
-  if (!res.ok) {
-    const msg = json?.message || text || `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-
-  return json ?? { ok: true };
-}
-
 export default function SettingsModal({ currentUser, onClose }: SettingsModalProps) {
   const { toast } = useToast();
   const { t } = useLanguage();
@@ -78,64 +48,6 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
   const [readReceipts, setReadReceipts] = useState(false);
   const [typingIndicators, setTypingIndicators] = useState(true);
 
-  const [deleting, setDeleting] = useState(false);
-
-  const handleDeleteAccount = async () => {
-    try {
-      setDeleting(true);
-
-      // ✅ Backend muss den User + Chats + Messages wirklich löschen
-      // Endpoint: DELETE /api/me
-      await authedFetch("/api/me", { method: "DELETE" });
-
-      // ✅ Danach ALLES lokal entfernen (auch Backup-Recovery)
-      try {
-        localStorage.removeItem("user");
-        localStorage.removeItem("token");
-
-        // cutoffs falls vorhanden
-        Object.keys(localStorage).forEach((k) => {
-          if (k.startsWith("chat_cutoffs_v1_")) localStorage.removeItem(k);
-        });
-      } catch {}
-
-      try {
-        // Backup/Recovery löschen (damit kein recover möglich ist)
-        (profileProtection as any)?.clearProfile?.();
-        (profileProtection as any)?.removeProfile?.();
-        (profileProtection as any)?.deleteProfile?.();
-        (profileProtection as any)?.purge?.();
-      } catch {}
-
-      try {
-        // Session Persistence resetten, falls du da was speicherst
-        SessionPersistence.getInstance()?.clear?.();
-        SessionPersistence.getInstance()?.reset?.();
-      } catch {}
-
-      toast({
-        title: t("success") || "Erfolg",
-        description: t("profileDeleted") || "Profil wurde dauerhaft gelöscht. Benutzername ist wieder frei.",
-      });
-
-      window.location.href = "/";
-    } catch (error: any) {
-      console.error("❌ Failed to delete profile:", error);
-      toast({
-        title: t("error") || "Fehler",
-        description: error?.message || (t("profileDeleteError") || "Profil konnte nicht gelöscht werden."),
-        variant: "destructive",
-      });
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const handleDeleteAllData = () => {
-    // optional: du kannst das weiterhin lassen
-    window.location.href = "/";
-  };
-
   const formatTimerOption = (seconds: string) => {
     const num = parseInt(seconds);
     if (num < 60) return `${num} second${num > 1 ? "s" : ""}`;
@@ -144,116 +56,87 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
     return `${num / 86400} day${num / 86400 > 1 ? "s" : ""}`;
   };
 
+  const handleDeleteProfile = async () => {
+    try {
+      const token = getAuthToken();
+      if (!token) throw new Error("Missing token");
+
+      const res = await fetch("/api/me", {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+
+      // local wipe
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
+
+      toast({
+        title: t("success") ?? "Success",
+        description: t("profileDeleted") ?? "Profile deleted permanently.",
+      });
+
+      window.location.href = "/";
+    } catch (err: any) {
+      toast({
+        title: t("error") ?? "Error",
+        description: err?.message || (t("profileDeleteError") ?? "Failed to delete profile."),
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <Dialog open onOpenChange={onClose}>
-      {/* ✅ nur minimal mobile fix: width + max height */}
-      <DialogContent className="bg-surface border-border w-[95vw] sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <div className="flex items-center justify-between">
-            {/* ✅ Whispergram -> VelumChat */}
-            <DialogTitle className="text-2xl font-bold text-text-primary">
-              {t("settingsTitle") || "Einstellungen"} • VelumChat
-            </DialogTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-              className="text-text-muted hover:text-text-primary"
-            >
-              <X className="w-4 h-4" />
-            </Button>
-          </div>
-        </DialogHeader>
-
-        <div className="space-y-8">
-          {/* Profile Section (✅ statt Username ändern: Profil löschen) */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("profile") || "Profil"}</h3>
-
-            <div className="space-y-4">
-              <div className="space-y-3">
-                <div className="flex items-center space-x-4">
-                  <div className="w-16 h-16 bg-primary rounded-full flex items-center justify-center">
-                    <KeyRound className="w-8 h-8 text-white" />
-                  </div>
-
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-text-primary mb-1">
-                      {t("username") || "Benutzername"}:
-                    </p>
-                    <p className="text-text-muted text-sm">@{currentUser.username}</p>
-                  </div>
-                </div>
-
-                <div className="bg-muted/30 p-3 rounded-lg border border-border">
-                  <p className="text-sm text-text-primary font-medium mb-1">
-                    💡 {t("deleteProfileTitle") || "Profil löschen"}
-                  </p>
-                  <p className="text-xs text-text-muted">
-                    {t("deleteProfileDesc") ||
-                      "Dabei wird dein Benutzername, alle Chats und Inhalte endgültig gelöscht. Danach ist der Benutzername wieder frei."}
-                  </p>
-                </div>
-              </div>
-
-              {/* ✅ Delete Profile with confirmation */}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="destructive"
-                    className="w-full"
-                    disabled={deleting}
-                  >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    {deleting ? (t("deleting") || "Lösche...") : (t("deleteProfile") || "Profil löschen")}
-                  </Button>
-                </AlertDialogTrigger>
-
-                <AlertDialogContent className="bg-surface border-border">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle className="text-text-primary">
-                      {t("confirmDeleteProfileTitle") || "Profil wirklich löschen?"}
-                    </AlertDialogTitle>
-                    <AlertDialogDescription className="text-text-muted">
-                      {t("confirmDeleteProfileDesc") ||
-                        "Das kann nicht rückgängig gemacht werden. Dein Benutzername wird freigegeben und kann von anderen genutzt werden."}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel className="bg-muted/30 border-border">
-                      {t("cancel") || "Abbrechen"}
-                    </AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleDeleteAccount}
-                      className="bg-red-600 hover:bg-red-700 text-white"
-                    >
-                      {t("deleteForever") || "Für immer löschen"}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+      <DialogContent
+        className="
+          bg-surface border-border
+          w-[94vw] max-w-md sm:max-w-2xl
+          max-h-[88vh] overflow-y-auto
+          p-0
+        "
+      >
+        {/* Sticky header for mobile */}
+        <div className="sticky top-0 z-10 bg-surface border-b border-border">
+          <DialogHeader className="p-4 sm:p-6">
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle className="text-xl sm:text-2xl font-bold text-text-primary">
+                {t("settingsTitle") ?? "Settings"}
+              </DialogTitle>
+              <Button variant="ghost" size="sm" onClick={onClose} className="text-text-muted hover:text-text-primary">
+                <X className="w-4 h-4" />
+              </Button>
             </div>
-          </div>
+          </DialogHeader>
+        </div>
 
-          {/* Language Settings */}
+        <div className="p-4 sm:p-6 space-y-7 sm:space-y-8">
+          {/* Language */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("language") || "Sprache"}</h3>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">{t("language") ?? "Language"}</h3>
             <div className="flex justify-start">
               <LanguageSelector />
             </div>
           </div>
 
-          {/* Security Settings (unverändert) */}
+          {/* Security */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("security") || "Sicherheit"}</h3>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">{t("security") ?? "Security"}</h3>
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("defaultTimer") || "Standard Timer"}</h4>
-                  <p className="text-sm text-text-muted">{t("autoDestructTime") || "Auto-Destruct Zeit"}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="font-medium text-text-primary">{t("defaultTimer") ?? "Default timer"}</h4>
+                  <p className="text-sm text-text-muted">{t("autoDestructTime") ?? "Auto destruct time"}</p>
                 </div>
                 <Select value={defaultTimer} onValueChange={setDefaultTimer}>
-                  <SelectTrigger className="w-32 bg-surface border-border text-text-primary">
+                  <SelectTrigger className="w-36 bg-surface border-border text-text-primary">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -267,123 +150,120 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
                 </Select>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("screenLock") || "Sperre"}</h4>
-                  <p className="text-sm text-text-muted">{t("screenLockDesc") || "App-Sperre aktiv"}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="font-medium text-text-primary">{t("screenLock") ?? "Screen lock"}</h4>
+                  <p className="text-sm text-text-muted">{t("screenLockDesc") ?? "Lock the screen"}</p>
                 </div>
                 <Switch checked={screenLock} onCheckedChange={setScreenLock} />
               </div>
 
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("incognitoKeyboard") || "Inkognito Tastatur"}</h4>
-                  <p className="text-sm text-text-muted">{t("incognitoKeyboardDesc") || "Kein Lernen/Vorschläge"}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="font-medium text-text-primary">{t("incognitoKeyboard") ?? "Incognito keyboard"}</h4>
+                  <p className="text-sm text-text-muted">{t("incognitoKeyboardDesc") ?? "Disable suggestions"}</p>
                 </div>
                 <Switch checked={incognitoKeyboard} onCheckedChange={setIncognitoKeyboard} />
               </div>
             </div>
           </div>
 
-          {/* Privacy Settings (unverändert) */}
+          {/* Privacy */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("privacy") || "Privatsphäre"}</h3>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">{t("privacy") ?? "Privacy"}</h3>
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("readReceipts") || "Lesebestätigung"}</h4>
-                  <p className="text-sm text-text-muted">{t("readReceiptsDesc") || "Gelesen Status"}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="font-medium text-text-primary">{t("readReceipts") ?? "Read receipts"}</h4>
+                  <p className="text-sm text-text-muted">{t("readReceiptsDesc") ?? "Show read receipts"}</p>
                 </div>
                 <Switch checked={readReceipts} onCheckedChange={setReadReceipts} />
               </div>
 
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("typingIndicators") || "Tippt..."}</h4>
-                  <p className="text-sm text-text-muted">{t("typingIndicatorsDesc") || "Tippen anzeigen"}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="font-medium text-text-primary">{t("typingIndicators") ?? "Typing indicators"}</h4>
+                  <p className="text-sm text-text-muted">{t("typingIndicatorsDesc") ?? "Show typing"}</p>
                 </div>
                 <Switch checked={typingIndicators} onCheckedChange={setTypingIndicators} />
               </div>
             </div>
           </div>
 
-          {/* Advanced Options (unverändert) */}
+          {/* Profile deletion (NEW) */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("about") || "Über"}</h3>
-            <div className="space-y-4">
-              <Button
-                variant="outline"
-                className="w-full justify-between bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4"
-              >
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("exportKeys") || "Keys exportieren"}</h4>
-                  <p className="text-sm text-text-muted">{t("exportKeysDesc") || "Private/Public Keys export"}</p>
-                </div>
-                <Key className="w-5 h-5 text-text-muted" />
-              </Button>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">{t("profile") ?? "Profile"}</h3>
 
-              <Button
-                variant="outline"
-                className="w-full justify-between bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4"
-              >
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("verifySecurityNumber") || "Security Number"}</h4>
-                  <p className="text-sm text-text-muted">{t("verifySecurityNumberDesc") || "Vergleichen"}</p>
-                </div>
-                <Shield className="w-5 h-5 text-accent" />
-              </Button>
+            <div className="bg-muted/25 border border-border rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-text-primary font-medium">
+                <Trash2 className="w-4 h-4 text-red-500" />
+                <span>{t("deleteProfile") ?? "Delete profile"}</span>
+              </div>
 
-              <Button
-                variant="outline"
-                className="w-full justify-between bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4"
-                onClick={() =>
-                  toast({
-                    title: t("info") || "Info",
-                    description:
-                      t("profilesAutoDelete20Days") ||
-                      "Profile werden nach 20 Tagen Inaktivität automatisch gelöscht.",
-                    variant: "default",
-                  })
-                }
-              >
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("info") || "Info"}</h4>
-                  <p className="text-sm text-text-muted">
-                    {t("profilesAutoDelete20Days") || "Auto-Löschung nach 20 Tagen Inaktivität"}
-                  </p>
-                </div>
-                <Info className="w-5 h-5 text-primary" />
-              </Button>
+              <p className="text-sm text-text-muted">
+                {t("deleteProfileDesc") ??
+                  "This permanently deletes your profile, chats and messages. Your username becomes available again."}
+              </p>
 
-              {/* optional: bleibt */}
-              <Button
-                variant="outline"
-                className="w-full justify-between bg-bg-dark border-border hover:bg-muted/50 text-left h-auto p-4"
-                onClick={handleDeleteAllData}
-              >
-                <div>
-                  <h4 className="font-medium text-text-primary">{t("logout") || "Logout"}</h4>
-                  <p className="text-sm text-text-muted">{t("logoutDesc") || "Zur Startseite"}</p>
-                </div>
-                <Info className="w-5 h-5 text-text-muted" />
-              </Button>
+              <div className="flex items-start gap-2 text-xs text-text-muted">
+                <Clock className="w-3.5 h-3.5 mt-0.5" />
+                <span>
+                  {t("autoDelete20Days") ??
+                    "Inactive profiles are automatically deleted after 20 days (username becomes free)."}
+                </span>
+              </div>
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button className="w-full mt-2 bg-red-600 hover:bg-red-700 text-white">
+                    {t("deleteProfile") ?? "Delete profile"}
+                  </Button>
+                </AlertDialogTrigger>
+
+                <AlertDialogContent className="max-w-[92vw] sm:max-w-lg">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      {t("confirmDeleteProfileTitle") ?? "Delete profile permanently?"}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {t("confirmDeleteProfileDesc") ??
+                        "This will permanently delete your account, all chats and messages. This cannot be undone."}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>{t("cancel") ?? "Cancel"}</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleDeleteProfile}
+                      className="bg-red-600 hover:bg-red-700 text-white"
+                    >
+                      {t("delete") ?? "Delete"}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </div>
 
-          {/* About footer */}
+          {/* About */}
           <div className="border-t border-border pt-6">
             <div className="text-center space-y-2">
               <p className="text-sm text-text-muted">VelumChat v1.0.0</p>
-              <div className="flex justify-center space-x-4 text-sm">
+              <div className="flex justify-center gap-4 text-sm">
                 <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("privacyPolicy") || "Privacy Policy"}
+                  {t("privacyPolicy") ?? "Privacy policy"}
                 </Button>
                 <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("sourceCode") || "Source Code"}
+                  {t("sourceCode") ?? "Source code"}
                 </Button>
                 <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("securityAudit") || "Security Audit"}
+                  {t("securityAudit") ?? "Security audit"}
                 </Button>
+              </div>
+
+              <div className="flex items-center justify-center gap-2 text-xs text-text-muted pt-1">
+                <Info className="w-3.5 h-3.5" />
+                <span>{t("loggedInAs") ?? "Logged in as"}: {currentUser.username}</span>
               </div>
             </div>
           </div>
