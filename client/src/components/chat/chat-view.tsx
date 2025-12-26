@@ -18,7 +18,7 @@ type ChatViewProps = {
   isConnected: boolean;
   onBackToList: () => void;
 
-  // ✅ Typing-System
+  // Typing-Support
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 };
@@ -35,43 +35,33 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [text, setText] = useState("");
-  const [destructTimer, setDestructTimer] = useState<number>(86400); // 24h default
+  const [destructTimer, setDestructTimer] = useState<number>(86400); // 24h
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // ✅ Typing-Debounce (nur für WS, nicht für UI)
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Typing-Steuerung
+  const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
 
-  // Immer nach unten scrollen, wenn sich Nachrichten ändern
+  // immer nach unten scrollen, wenn neue Nachrichten kommen oder Typing-Blase
   useEffect(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, isPartnerTyping]);
 
-  // Wenn Chat gewechselt wird → Eingabe leeren & „typing = false“
+  // Chatwechsel -> Eingabe leeren + Tipp-Status zurücksetzen
   useEffect(() => {
     setText("");
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
     }
-  }, [selectedChat?.id, onTyping]);
-
-  // Beim Unmount sicherheitshalber Typing aus
-  useEffect(() => {
-    return () => {
-      if (onTyping && isTypingRef.current) {
-        onTyping(false);
-        isTypingRef.current = false;
-      }
-    };
-  }, [onTyping]);
+  }, [selectedChat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!selectedChat) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#0b141a]">
-        <p className="text-sm md:text-base text-[#8696a0] text-center px-4">
+      <div className="flex-1 flex items-center justify-center bg-[#020617]">
+        <p className="text-sm md:text-base text-slate-400 text-center px-4">
           {t("selectChatToStart")}
         </p>
       </div>
@@ -84,13 +74,13 @@ export default function ChatView({
 
     if (!onTyping) return;
 
-    // beim ersten Tastendruck → „tippt…“
+    // erstes Tippen -> isTyping = true
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
-    // wenn 1,5s nichts mehr kommt → „tippt nicht mehr“
+    // wenn 1,5s nichts mehr getippt wird -> isTyping = false
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       if (isTypingRef.current) {
@@ -111,14 +101,9 @@ export default function ChatView({
     onSendMessage(trimmed, "text", destructTimer);
     setText("");
 
-    // nach dem Senden → tippt nicht mehr
     if (onTyping && isTypingRef.current) {
       isTypingRef.current = false;
       onTyping(false);
-    }
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = null;
     }
   };
 
@@ -136,39 +121,38 @@ export default function ChatView({
   };
 
   return (
-    // ✅ volle Bildschirm-Höhe, damit der Chat nicht "kurz" aussieht
-    <div className="flex flex-col w-full h-[100dvh] bg-[#0b141a]">
-      {/* Header */}
-      <div className="flex items-center px-3 py-2 border-b border-[#202c33] bg-[#202c33]">
+    <div className="flex flex-col w-full h-full bg-[#020617]">
+      {/* Header – dunkel wie dein Logo */}
+      <div className="flex items-center px-3 py-2 border-b border-slate-800 bg-[#020617]">
         <button
-          className="md:hidden mr-2 text-[#e9edef]"
+          className="md:hidden mr-2 text-slate-100"
           onClick={onBackToList}
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-[#00a884]/20 flex items-center justify-center">
-            <span className="text-sm font-semibold text-[#e9edef]">
+          <div className="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center">
+            <span className="text-sm font-semibold text-slate-50">
               {selectedChat.otherUser.username.charAt(0).toUpperCase()}
             </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-sm md:text-base font-semibold text-[#e9edef]">
+            <span className="text-sm md:text-base font-semibold text-slate-50">
               {selectedChat.otherUser.username}
             </span>
-            <span className="text-[11px] text-[#8696a0]">
+            <span className="text-[11px] text-emerald-400">
               {isConnected ? t("connected") : t("disconnected")}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Messages */}
+      {/* Messages – komplett dunkler Hintergrund, kein WhatsApp-Wallpaper */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto px-2 sm:px-4 py-2 sm:py-3 bg-[url('https://static.whatsapp.net/rsrc.php/v3/yl/r/gi_DckCwvlW.png')] bg-repeat bg-[length:400px_400px]"
+        className="flex-1 overflow-y-auto px-3 py-3 bg-[#020617]"
       >
-        <div className="flex flex-col gap-1 sm:gap-1.5">
+        <div className="flex flex-col gap-2">
           {messages.map((m) => {
             const isMine = m.senderId === currentUser.id;
             return (
@@ -180,17 +164,19 @@ export default function ChatView({
               >
                 <div
                   className={
-                    "max-w-[80%] rounded-lg px-2.5 py-1.5 text-[13px] sm:text-sm shadow-sm " +
+                    "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] sm:text-sm shadow " +
                     (isMine
-                      ? "bg-[#005c4b] text-[#e9edef] rounded-tr-none"
-                      : "bg-[#202c33] text-[#e9edef] rounded-tl-none")
+                      ? // eigene Nachrichten – dunkles Grün/Teal
+                        "bg-emerald-700 text-slate-50 rounded-tr-sm"
+                      : // Partner – dunkles Blau/Grau
+                        "bg-slate-800 text-slate-50 rounded-tl-sm")
                   }
                 >
                   <div className="whitespace-pre-wrap break-words">
                     {m.content}
                   </div>
-                  <div className="flex justify-end mt-0.5">
-                    <span className="text-[10px] text-[#8696a0]">
+                  <div className="flex justify-end mt-1">
+                    <span className="text-[10px] text-slate-300">
                       {formatTime(m.createdAt)}
                     </span>
                   </div>
@@ -199,14 +185,14 @@ export default function ChatView({
             );
           })}
 
-          {/* ✅ Tipp-Bubble des PARTNERS (nur wenn isPartnerTyping = true) */}
+          {/* Tipp-Bubble des Partners – nur animierte Punkte */}
           {isPartnerTyping && (
             <div className="flex w-full justify-start mt-1">
-              <div className="inline-flex items-center px-3 py-1.5 rounded-lg rounded-tl-none bg-[#202c33] text-[#e9edef] shadow-sm">
+              <div className="inline-flex items-center px-3 py-2 rounded-2xl rounded-tl-sm bg-slate-800 text-slate-50 shadow">
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#e9edef] opacity-70 animate-bounce [animation-delay:-0.2s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#e9edef] opacity-70 animate-bounce [animation-delay:-0.1s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#e9edef] opacity-70 animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce [animation-delay:-0.2s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce [animation-delay:-0.1s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce" />
                 </div>
               </div>
             </div>
@@ -214,17 +200,15 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Input-Bereich */}
-      <div className="px-2 sm:px-3 py-2 bg-[#202c33] border-t border-[#202c33] flex flex-col gap-2">
+      {/* Input-Leiste – dunkel, schlicht */}
+      <div className="px-3 py-2 bg-[#020617] border-t border-slate-800 flex flex-col gap-2">
         {/* Auto-Destruct Timer */}
-        <div className="flex items-center justify-end gap-2 text-[11px] text-[#8696a0] mb-1">
+        <div className="flex items-center justify-end gap-2 text-[11px] text-slate-300 mb-1">
           <span>{t("autoDestruct")}:</span>
           <select
-            className="bg-[#111b21] text-[#e9edef] text-[11px] rounded px-2 py-1 border border-[#202c33]"
+            className="bg-slate-900 text-slate-100 text-[11px] rounded px-2 py-1 border border-slate-700"
             value={destructTimer}
-            onChange={(e) =>
-              setDestructTimer(Number(e.target.value) || 86400)
-            }
+            onChange={(e) => setDestructTimer(Number(e.target.value) || 86400)}
           >
             <option value={10}>10s</option>
             <option value={60}>1m</option>
@@ -241,11 +225,11 @@ export default function ChatView({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             placeholder={t("typeMessage")}
-            className="flex-1 bg-[#111b21] border-none text-[#e9edef] placeholder:text-[#8696a0] text-sm h-10 sm:h-11 rounded-lg"
+            className="flex-1 bg-slate-900 border-none text-slate-100 placeholder:text-slate-500 text-sm h-11 rounded-xl"
           />
           <Button
             size="icon"
-            className="h-10 w-10 sm:h-11 sm:w-11 rounded-full bg-[#00a884] hover:bg-[#02956f]"
+            className="h-11 w-11 rounded-full bg-emerald-600 hover:bg-emerald-500"
             onClick={handleSend}
             disabled={!text.trim()}
           >
