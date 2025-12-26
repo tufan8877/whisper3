@@ -1,3 +1,4 @@
+// client/src/components/chat/chat-view.tsx
 import { useEffect, useRef, useState } from "react";
 import type { User, Chat, Message } from "@shared/schema";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ type ChatViewProps = {
   isConnected: boolean;
   onBackToList: () => void;
 
-  // Typing-Support
+  // Tipp-Events
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 };
@@ -35,33 +36,34 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [text, setText] = useState("");
-  const [destructTimer, setDestructTimer] = useState<number>(86400); // 24h
+  const [destructTimer, setDestructTimer] = useState<number>(86400); // 24h default
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Typing-Steuerung
+  // Tipp-Steuerung
   const typingTimeoutRef = useRef<any>(null);
   const isTypingRef = useRef(false);
 
-  // immer nach unten scrollen, wenn neue Nachrichten kommen oder Typing-Blase
+  // Immer ans Ende scrollen, wenn Nachrichten oder Typing-Bubble sich ändern
   useEffect(() => {
     if (!listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, isPartnerTyping]);
 
-  // Chatwechsel -> Eingabe leeren + Tipp-Status zurücksetzen
+  // Beim Chat-Wechsel: Eingabe leeren + Tipp-Status zurücksetzen
   useEffect(() => {
     setText("");
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
     }
-  }, [selectedChat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChat?.id]);
 
   if (!selectedChat) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#020617]">
-        <p className="text-sm md:text-base text-slate-400 text-center px-4">
+      <div className="flex-1 flex items-center justify-center bg-background">
+        <p className="text-sm md:text-base text-muted-foreground text-center px-4">
           {t("selectChatToStart")}
         </p>
       </div>
@@ -74,13 +76,13 @@ export default function ChatView({
 
     if (!onTyping) return;
 
-    // erstes Tippen -> isTyping = true
+    // erstes Tastendrücken -> "isTyping = true"
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
-    // wenn 1,5s nichts mehr getippt wird -> isTyping = false
+    // Timeout neu setzen: wenn 1,5s keine Eingabe -> "isTyping = false"
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       if (isTypingRef.current) {
@@ -121,38 +123,38 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col w-full h-full bg-[#020617]">
-      {/* Header – dunkel wie dein Logo */}
-      <div className="flex items-center px-3 py-2 border-b border-slate-800 bg-[#020617]">
+    <div className="flex flex-col w-full h-full bg-background">
+      {/* Header */}
+      <div className="flex items-center px-3 py-2 border-b border-border bg-card/95">
         <button
-          className="md:hidden mr-2 text-slate-100"
+          className="md:hidden mr-2 text-foreground"
           onClick={onBackToList}
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center">
-            <span className="text-sm font-semibold text-slate-50">
+          <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center">
+            <span className="text-sm font-semibold text-primary-foreground">
               {selectedChat.otherUser.username.charAt(0).toUpperCase()}
             </span>
           </div>
           <div className="flex flex-col">
-            <span className="text-sm md:text-base font-semibold text-slate-50">
+            <span className="text-sm md:text-base font-semibold text-foreground">
               {selectedChat.otherUser.username}
             </span>
-            <span className="text-[11px] text-emerald-400">
+            <span className="text-[11px] text-muted-foreground">
               {isConnected ? t("connected") : t("disconnected")}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Messages – komplett dunkler Hintergrund, kein WhatsApp-Wallpaper */}
+      {/* Messages */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto px-3 py-3 bg-[#020617]"
+        className="flex-1 overflow-y-auto px-3 py-3 bg-background"
       >
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           {messages.map((m) => {
             const isMine = m.senderId === currentUser.id;
             return (
@@ -164,19 +166,17 @@ export default function ChatView({
               >
                 <div
                   className={
-                    "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] sm:text-sm shadow " +
+                    "max-w-[80%] rounded-lg px-3 py-1.5 text-[13px] sm:text-sm shadow-sm " +
                     (isMine
-                      ? // eigene Nachrichten – dunkles Grün/Teal
-                        "bg-emerald-700 text-slate-50 rounded-tr-sm"
-                      : // Partner – dunkles Blau/Grau
-                        "bg-slate-800 text-slate-50 rounded-tl-sm")
+                      ? "bg-primary text-primary-foreground rounded-tr-none"
+                      : "bg-muted text-foreground rounded-tl-none")
                   }
                 >
                   <div className="whitespace-pre-wrap break-words">
                     {m.content}
                   </div>
-                  <div className="flex justify-end mt-1">
-                    <span className="text-[10px] text-slate-300">
+                  <div className="flex justify-end mt-0.5">
+                    <span className="text-[10px] text-muted-foreground">
                       {formatTime(m.createdAt)}
                     </span>
                   </div>
@@ -185,14 +185,14 @@ export default function ChatView({
             );
           })}
 
-          {/* Tipp-Bubble des Partners – nur animierte Punkte */}
+          {/* Tipp-Bubble des Partners (nur Punkte, kein Text) */}
           {isPartnerTyping && (
             <div className="flex w-full justify-start mt-1">
-              <div className="inline-flex items-center px-3 py-2 rounded-2xl rounded-tl-sm bg-slate-800 text-slate-50 shadow">
+              <div className="inline-flex items-center px-3 py-1.5 rounded-lg rounded-tl-none bg-muted text-foreground shadow-sm">
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce [animation-delay:-0.2s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce [animation-delay:-0.1s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-50 opacity-80 animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-foreground/70 animate-bounce [animation-delay:-0.2s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-foreground/70 animate-bounce [animation-delay:-0.1s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-foreground/70 animate-bounce" />
                 </div>
               </div>
             </div>
@@ -200,13 +200,13 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Input-Leiste – dunkel, schlicht */}
-      <div className="px-3 py-2 bg-[#020617] border-t border-slate-800 flex flex-col gap-2">
-        {/* Auto-Destruct Timer */}
-        <div className="flex items-center justify-end gap-2 text-[11px] text-slate-300 mb-1">
+      {/* Input + Selbstzerstörung */}
+      <div className="px-2 sm:px-3 py-2 bg-card/95 border-t border-border flex flex-col gap-2">
+        {/* Selbstzerstörungs-Timer */}
+        <div className="flex items-center justify-end gap-2 text-[11px] text-muted-foreground mb-1">
           <span>{t("autoDestruct")}:</span>
           <select
-            className="bg-slate-900 text-slate-100 text-[11px] rounded px-2 py-1 border border-slate-700"
+            className="bg-background text-foreground text-[11px] rounded px-2 py-1 border border-border"
             value={destructTimer}
             onChange={(e) => setDestructTimer(Number(e.target.value) || 86400)}
           >
@@ -225,15 +225,15 @@ export default function ChatView({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             placeholder={t("typeMessage")}
-            className="flex-1 bg-slate-900 border-none text-slate-100 placeholder:text-slate-500 text-sm h-11 rounded-xl"
+            className="flex-1 bg-background border border-border text-foreground placeholder:text-muted-foreground text-sm h-10 sm:h-11 rounded-lg"
           />
           <Button
             size="icon"
-            className="h-11 w-11 rounded-full bg-emerald-600 hover:bg-emerald-500"
+            className="h-10 w-10 sm:h-11 sm:w-11 rounded-full bg-primary hover:bg-primary/90"
             onClick={handleSend}
             disabled={!text.trim()}
           >
-            <Send className="w-4 h-4 text-white" />
+            <Send className="w-4 h-4 text-primary-foreground" />
           </Button>
         </div>
       </div>
