@@ -2,14 +2,6 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -24,13 +16,12 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { LanguageSelector } from "@/components/ui/language-selector";
 
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/lib/i18n";
-import { X, KeyRound, Shield, Trash2 } from "lucide-react";
+import { X, KeyRound, Trash2 } from "lucide-react";
 import type { User } from "@shared/schema";
 
 interface SettingsModalProps {
@@ -46,304 +37,176 @@ export default function SettingsModal({
   const { toast } = useToast();
   const { t } = useLanguage();
 
-  // nur noch Anzeige, kein Username-Ändern mehr
-  const [defaultTimer, setDefaultTimer] = useState("86400");
-  const [screenLock, setScreenLock] = useState(true);
-  const [incognitoKeyboard, setIncognitoKeyboard] = useState(true);
-  const [readReceipts, setReadReceipts] = useState(false);
-  const [typingIndicators, setTypingIndicators] = useState(true);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const formatTimerOption = (seconds: string) => {
-    const num = parseInt(seconds);
-    if (num < 60) return `${num} ${t("seconds")}`;
-    if (num < 3600) return `${num / 60} ${t("minutes")}`;
-    if (num < 86400) return `${num / 3600} ${t("hours")}`;
-    return `${num / 86400} ${t("days")}`;
-  };
-
+  // ---------- Account löschen ----------
   const handleDeleteAccount = async () => {
     try {
       setIsDeleting(true);
 
-      // Token aus localStorage holen
-      const raw = localStorage.getItem("user");
-      let token: string | null = null;
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          token = parsed?.token || null;
-        } catch {
-          token = null;
-        }
-      }
-
+      const token = localStorage.getItem("token");
       if (!token) {
-        toast({
-          title: t("error"),
-          description: t("accountDeleteError"),
-          variant: "destructive",
-        });
-        setIsDeleting(false);
-        return;
+        throw new Error("Missing auth token");
       }
 
-      const res = await fetch("/api/me", {
+      const res = await fetch("/api/users/me", {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${token}`,
         },
-        credentials: "include",
       });
 
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        console.error("Delete account failed:", res.status, txt);
-        toast({
-          title: t("error"),
-          description: t("accountDeleteError"),
-          variant: "destructive",
-        });
-        setIsDeleting(false);
-        return;
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || "Failed to delete account");
       }
 
-      // wirklich alles lokale löschen
-      try {
-        localStorage.clear();
-        sessionStorage.clear();
-      } catch {}
+      // alles lokal weg
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
 
       toast({
         title: t("success"),
         description: t("accountDeleted"),
       });
 
-      // auf Login-Seite
+      // zurück zum Start
       window.location.href = "/";
     } catch (err) {
-      console.error("❌ Failed to delete account:", err);
+      console.error("Delete account error:", err);
       toast({
         title: t("error"),
-        description: t("accountDeleteError"),
+        description:
+          err instanceof Error
+            ? err.message
+            : t("accountDeleteError"),
         variant: "destructive",
       });
+    } finally {
       setIsDeleting(false);
+      setIsDeleteDialogOpen(false);
     }
   };
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="bg-surface border-border max-w-lg w-full max-h-[90vh] overflow-y-auto">
+      <DialogContent className="bg-surface border-border max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center justify-between">
-            <DialogTitle className="text-xl font-bold text-text-primary">
+            <DialogTitle className="text-2xl font-bold text-text-primary">
               {t("settingsTitle")}
             </DialogTitle>
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
               onClick={onClose}
-              className="text-text-muted hover:text-text-primary"
+              className="p-1 rounded-full text-text-muted hover:text-text-primary hover:bg-muted/40 transition"
+              aria-label="Close settings"
             >
               <X className="w-4 h-4" />
-            </Button>
+            </button>
           </div>
         </DialogHeader>
 
-        <div className="space-y-6 pb-2">
-          {/* Profile Section (nur Anzeige + Profil löschen) */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-3">
+        <div className="space-y-8 pb-4">
+          {/* Profil */}
+          <section>
+            <h3 className="text-lg font-semibold text-text-primary mb-4">
               {t("profile")}
             </h3>
-            <div className="space-y-3">
-              <div className="flex items-center space-x-4">
-                <div className="w-12 h-12 bg-primary rounded-full flex items-center justify-center">
-                  <KeyRound className="w-6 h-6 text-white" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-text-muted mb-1">
-                    {t("anonymousIdentifier")}
-                  </p>
-                  <Input
-                    value={currentUser.username}
-                    readOnly
-                    className="!bg-surface !text-text-primary !border-border cursor-default"
-                  />
-                </div>
+
+            <div className="flex items-center gap-4 mb-4">
+              <div className="w-14 h-14 rounded-full bg-primary flex items-center justify-center">
+                <KeyRound className="w-7 h-7 text-white" />
+              </div>
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  {t("username")}
+                </label>
+                <Input
+                  value={currentUser.username}
+                  disabled
+                  className="bg-surface text-text-primary border-border opacity-80 cursor-not-allowed"
+                />
+                <p className="text-xs text-text-muted mt-1">
+                  {t("anonymousIdentifier")}
+                </p>
               </div>
             </div>
 
-            {/* Profil löschen */}
-            <div className="mt-4">
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="destructive"
-                    className="w-full flex items-center justify-center gap-2"
+            {/* Profil löschen Button */}
+            <AlertDialog
+              open={isDeleteDialogOpen}
+              onOpenChange={setIsDeleteDialogOpen}
+            >
+              <AlertDialogContent className="bg-surface border-border">
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="text-text-primary">
+                    {t("deleteAccountTitle")}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription className="text-text-muted">
+                    {t("deleteAccountConfirm")}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="bg-muted text-text-primary border-border">
+                    {t("cancel")}
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDeleteAccount}
+                    className="bg-destructive text-white hover:bg-destructive/90"
                   >
-                    <Trash2 className="w-4 h-4" />
-                    {t("deleteAccount")}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent className="bg-surface border-border">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle className="text-text-primary">
-                      {t("deleteAccountTitle")}
-                    </AlertDialogTitle>
-                    <AlertDialogDescription className="text-text-muted whitespace-pre-line">
-                      {t("deleteAccountConfirm")}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel disabled={isDeleting}>
-                      {t("cancel")}
-                    </AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleDeleteAccount}
-                      disabled={isDeleting}
-                      className="bg-destructive hover:bg-destructive/90"
-                    >
-                      {isDeleting ? t("deleting") : t("deleteAccountForever")}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-              <p className="mt-2 text-xs text-red-400">
-                {/* kurze Warnung */}
-                {t("deleteAccountDescription")}
-              </p>
-            </div>
-          </div>
+                    {isDeleting ? t("deleting") : t("deleteAccountForever")}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
 
-          {/* Language Settings */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-3">
+              <Button
+                variant="destructive"
+                className="w-full justify-center mt-2"
+                onClick={() => setIsDeleteDialogOpen(true)}
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                {t("deleteAccount")}
+              </Button>
+            </AlertDialog>
+          </section>
+
+          {/* Sprache */}
+          <section>
+            <h3 className="text-lg font-semibold text-text-primary mb-4">
               {t("language")}
             </h3>
-            <div className="flex justify-start">
-              <LanguageSelector />
-            </div>
-          </div>
+            <LanguageSelector />
+          </section>
 
-          {/* Security Settings (nur Optik, keine Server-Logik nötig) */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-3">
-              {t("security")}
-            </h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h4 className="font-medium text-text-primary">
-                    {t("defaultTimer")}
-                  </h4>
-                  <p className="text-sm text-text-muted">
-                    {t("autoDestructTime")}
-                  </p>
-                </div>
-                <Select
-                  value={defaultTimer}
-                  onValueChange={setDefaultTimer}
+          {/* About / Version */}
+          <section className="border-t border-border pt-4">
+            <div className="text-center space-y-2">
+              <p className="text-sm text-text-muted">
+                VelumChat v1.0.0
+              </p>
+              <div className="flex justify-center space-x-4 text-sm">
+                <Button
+                  variant="link"
+                  className="text-primary hover:text-primary/80 p-0 h-auto"
                 >
-                  <SelectTrigger className="w-32 bg-surface border-border text-text-primary">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">{formatTimerOption("1")}</SelectItem>
-                    <SelectItem value="10">{formatTimerOption("10")}</SelectItem>
-                    <SelectItem value="60">{formatTimerOption("60")}</SelectItem>
-                    <SelectItem value="3600">
-                      {formatTimerOption("3600")}
-                    </SelectItem>
-                    <SelectItem value="86400">
-                      {formatTimerOption("86400")}
-                    </SelectItem>
-                    <SelectItem value="518400">
-                      {formatTimerOption("518400")}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h4 className="font-medium text-text-primary">
-                    {t("screenLock")}
-                  </h4>
-                  <p className="text-sm text-text-muted">
-                    {t("screenLockDesc")}
-                  </p>
-                </div>
-                <Switch
-                  checked={screenLock}
-                  onCheckedChange={setScreenLock}
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h4 className="font-medium text-text-primary">
-                    {t("incognitoKeyboard")}
-                  </h4>
-                  <p className="text-sm text-text-muted">
-                    {t("incognitoKeyboardDesc")}
-                  </p>
-                </div>
-                <Switch
-                  checked={incognitoKeyboard}
-                  onCheckedChange={setIncognitoKeyboard}
-                />
+                  {t("privacyPolicy")}
+                </Button>
+                <Button
+                  variant="link"
+                  className="text-primary hover:text-primary/80 p-0 h-auto"
+                >
+                  {t("sourceCode")}
+                </Button>
+                <Button
+                  variant="link"
+                  className="text-primary hover:text-primary/80 p-0 h-auto"
+                >
+                  {t("securityAudit")}
+                </Button>
               </div>
             </div>
-          </div>
-
-          {/* Privacy Settings */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-3">
-              {t("privacy")}
-            </h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h4 className="font-medium text-text-primary">
-                    {t("readReceipts")}
-                  </h4>
-                  <p className="text-sm text-text-muted">
-                    {t("readReceiptsDesc")}
-                  </p>
-                </div>
-                <Switch
-                  checked={readReceipts}
-                  onCheckedChange={setReadReceipts}
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h4 className="font-medium text-text-primary">
-                    {t("typingIndicators")}
-                  </h4>
-                  <p className="text-sm text-text-muted">
-                    {t("typingIndicatorsDesc")}
-                  </p>
-                </div>
-                <Switch
-                  checked={typingIndicators}
-                  onCheckedChange={setTypingIndicators}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* About / Info sehr klein unten */}
-          <div className="border-t border-border/50 pt-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-text-muted">
-                <Shield className="w-4 h-4" />
-                <span>VelumChat v1.0.0</span>
-              </div>
-            </div>
-          </div>
+          </section>
         </div>
       </DialogContent>
     </Dialog>
