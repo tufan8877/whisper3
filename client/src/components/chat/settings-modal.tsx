@@ -1,14 +1,36 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { LanguageSelector } from "@/components/ui/language-selector";
 
 import { useToast } from "@/hooks/use-toast";
 import { useLanguage } from "@/lib/i18n";
-import { X, KeyRound, Key, Shield, Info } from "lucide-react";
+import { X, KeyRound, Shield, Trash2 } from "lucide-react";
 import type { User } from "@shared/schema";
 
 interface SettingsModalProps {
@@ -17,291 +39,308 @@ interface SettingsModalProps {
   onUpdateUser: (user: User & { privateKey: string }) => void;
 }
 
-export default function SettingsModal({ currentUser, onClose, onUpdateUser }: SettingsModalProps) {
+export default function SettingsModal({
+  currentUser,
+  onClose,
+}: SettingsModalProps) {
   const { toast } = useToast();
   const { t } = useLanguage();
 
-  const [username, setUsername] = useState(currentUser.username);
+  // nur noch Anzeige, kein Username-Ändern mehr
   const [defaultTimer, setDefaultTimer] = useState("86400");
   const [screenLock, setScreenLock] = useState(true);
   const [incognitoKeyboard, setIncognitoKeyboard] = useState(true);
   const [readReceipts, setReadReceipts] = useState(false);
   const [typingIndicators, setTypingIndicators] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const handleSaveProfile = async () => {
-    if (!username.trim()) {
-      toast({
-        title: t("error"),
-        description: t("usernameEmpty"),
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/users/${currentUser.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim() }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData?.message || "Failed to update username");
-      }
-
-      await response.json().catch(() => null);
-
-      const updatedUser = { ...currentUser, username: username.trim() };
-      localStorage.setItem("user", JSON.stringify(updatedUser));
-      onUpdateUser(updatedUser);
-
-      toast({ title: t("success"), description: t("usernameUpdated") });
-      onClose();
-    } catch (error: any) {
-      toast({
-        title: t("error"),
-        description: error?.message || t("profileSaveError"),
-        variant: "destructive",
-      });
-    }
+  const formatTimerOption = (seconds: string) => {
+    const num = parseInt(seconds);
+    if (num < 60) return `${num} ${t("seconds")}`;
+    if (num < 3600) return `${num / 60} ${t("minutes")}`;
+    if (num < 86400) return `${num / 3600} ${t("hours")}`;
+    return `${num / 86400} ${t("days")}`;
   };
 
   const handleDeleteAccount = async () => {
-    toast({
-      title: t("info"),
-      description:
-        "Account deletion is disabled. Usernames are permanent like Wickr Me. Use logout to clear local data.",
-      variant: "default",
-    });
-  };
+    try {
+      setIsDeleting(true);
 
-  const formatTimerOption = (seconds: string) => {
-    const num = parseInt(seconds, 10);
-    if (num < 60) return `${num} second${num > 1 ? "s" : ""}`;
-    if (num < 3600) return `${num / 60} minute${num / 60 > 1 ? "s" : ""}`;
-    if (num < 86400) return `${num / 3600} hour${num / 3600 > 1 ? "s" : ""}`;
-    return `${num / 86400} day${num / 86400 > 1 ? "s" : ""}`;
+      // Token aus localStorage holen
+      const raw = localStorage.getItem("user");
+      let token: string | null = null;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          token = parsed?.token || null;
+        } catch {
+          token = null;
+        }
+      }
+
+      if (!token) {
+        toast({
+          title: t("error"),
+          description: t("accountDeleteError"),
+          variant: "destructive",
+        });
+        setIsDeleting(false);
+        return;
+      }
+
+      const res = await fetch("/api/me", {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        console.error("Delete account failed:", res.status, txt);
+        toast({
+          title: t("error"),
+          description: t("accountDeleteError"),
+          variant: "destructive",
+        });
+        setIsDeleting(false);
+        return;
+      }
+
+      // wirklich alles lokale löschen
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+      } catch {}
+
+      toast({
+        title: t("success"),
+        description: t("accountDeleted"),
+      });
+
+      // auf Login-Seite
+      window.location.href = "/";
+    } catch (err) {
+      console.error("❌ Failed to delete account:", err);
+      toast({
+        title: t("error"),
+        description: t("accountDeleteError"),
+        variant: "destructive",
+      });
+      setIsDeleting(false);
+    }
   };
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent
-        className="
-          bg-surface border-border
-          w-[calc(100vw-24px)] sm:max-w-2xl
-          max-h-[85dvh] overflow-y-auto
-          p-4 sm:p-6
-        "
-      >
+      <DialogContent className="bg-surface border-border max-w-lg w-full max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <div className="flex items-center justify-between gap-3">
-            <DialogTitle className="text-2xl font-bold text-text-primary">{t("settingsTitle")}</DialogTitle>
+          <div className="flex items-center justify-between">
+            <DialogTitle className="text-xl font-bold text-text-primary">
+              {t("settingsTitle")}
+            </DialogTitle>
             <Button
               variant="ghost"
               size="sm"
               onClick={onClose}
               className="text-text-muted hover:text-text-primary"
-              aria-label="Close"
             >
               <X className="w-4 h-4" />
             </Button>
           </div>
         </DialogHeader>
 
-        <div className="space-y-8">
-          {/* Profile Section */}
+        <div className="space-y-6 pb-2">
+          {/* Profile Section (nur Anzeige + Profil löschen) */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("profile")}</h3>
-
-            <div className="space-y-4">
-              <div className="space-y-3">
-                <div className="flex items-start sm:items-center gap-4">
-                  <div className="w-14 h-14 sm:w-16 sm:h-16 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-                    <KeyRound className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <label className="block text-sm font-medium text-text-primary mb-2">{t("username")}</label>
-                    <Input
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder={t("newUsername")}
-                      className="!bg-surface !text-text-primary !border-border"
-                    />
-                  </div>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">
+              {t("profile")}
+            </h3>
+            <div className="space-y-3">
+              <div className="flex items-center space-x-4">
+                <div className="w-12 h-12 bg-primary rounded-full flex items-center justify-center">
+                  <KeyRound className="w-6 h-6 text-white" />
                 </div>
-
-                <div className="bg-muted/30 p-3 rounded-lg border border-border">
-                  <p className="text-sm text-text-primary font-medium mb-1">💡 {t("changeUsername")}</p>
-                  <p className="text-xs text-text-muted break-words whitespace-normal">{t("usernameDescription")}</p>
+                <div className="flex-1">
+                  <p className="text-sm text-text-muted mb-1">
+                    {t("anonymousIdentifier")}
+                  </p>
+                  <Input
+                    value={currentUser.username}
+                    readOnly
+                    className="!bg-surface !text-text-primary !border-border cursor-default"
+                  />
                 </div>
               </div>
+            </div>
 
-              <Button onClick={handleSaveProfile} className="w-full">
-                {t("saveProfile")}
-              </Button>
+            {/* Profil löschen */}
+            <div className="mt-4">
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="destructive"
+                    className="w-full flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    {t("deleteAccount")}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent className="bg-surface border-border">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle className="text-text-primary">
+                      {t("deleteAccountTitle")}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription className="text-text-muted whitespace-pre-line">
+                      {t("deleteAccountConfirm")}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={isDeleting}>
+                      {t("cancel")}
+                    </AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleDeleteAccount}
+                      disabled={isDeleting}
+                      className="bg-destructive hover:bg-destructive/90"
+                    >
+                      {isDeleting ? t("deleting") : t("deleteAccountForever")}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <p className="mt-2 text-xs text-red-400">
+                {/* kurze Warnung */}
+                {t("deleteAccountDescription")}
+              </p>
             </div>
           </div>
 
           {/* Language Settings */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("language")}</h3>
+            <h3 className="text-lg font-semibold text-text-primary mb-3">
+              {t("language")}
+            </h3>
             <div className="flex justify-start">
               <LanguageSelector />
             </div>
           </div>
 
-          {/* Security Settings */}
+          {/* Security Settings (nur Optik, keine Server-Logik nötig) */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("security")}</h3>
-
+            <h3 className="text-lg font-semibold text-text-primary mb-3">
+              {t("security")}
+            </h3>
             <div className="space-y-4">
-              <div className="flex items-start sm:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="font-medium text-text-primary">{t("defaultTimer")}</h4>
-                  <p className="text-sm text-text-muted break-words whitespace-normal">{t("autoDestructTime")}</p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-medium text-text-primary">
+                    {t("defaultTimer")}
+                  </h4>
+                  <p className="text-sm text-text-muted">
+                    {t("autoDestructTime")}
+                  </p>
                 </div>
-
-                <Select value={defaultTimer} onValueChange={setDefaultTimer}>
-                  <SelectTrigger className="w-40 sm:w-44 bg-surface border-border text-text-primary flex-shrink-0">
+                <Select
+                  value={defaultTimer}
+                  onValueChange={setDefaultTimer}
+                >
+                  <SelectTrigger className="w-32 bg-surface border-border text-text-primary">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="1">{formatTimerOption("1")}</SelectItem>
                     <SelectItem value="10">{formatTimerOption("10")}</SelectItem>
                     <SelectItem value="60">{formatTimerOption("60")}</SelectItem>
-                    <SelectItem value="3600">{formatTimerOption("3600")}</SelectItem>
-                    <SelectItem value="86400">{formatTimerOption("86400")}</SelectItem>
-                    <SelectItem value="518400">{formatTimerOption("518400")}</SelectItem>
+                    <SelectItem value="3600">
+                      {formatTimerOption("3600")}
+                    </SelectItem>
+                    <SelectItem value="86400">
+                      {formatTimerOption("86400")}
+                    </SelectItem>
+                    <SelectItem value="518400">
+                      {formatTimerOption("518400")}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              <div className="flex items-start sm:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="font-medium text-text-primary">{t("screenLock")}</h4>
-                  <p className="text-sm text-text-muted break-words whitespace-normal">{t("screenLockDesc")}</p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-medium text-text-primary">
+                    {t("screenLock")}
+                  </h4>
+                  <p className="text-sm text-text-muted">
+                    {t("screenLockDesc")}
+                  </p>
                 </div>
-                <Switch checked={screenLock} onCheckedChange={setScreenLock} className="flex-shrink-0" />
+                <Switch
+                  checked={screenLock}
+                  onCheckedChange={setScreenLock}
+                />
               </div>
 
-              <div className="flex items-start sm:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="font-medium text-text-primary">{t("incognitoKeyboard")}</h4>
-                  <p className="text-sm text-text-muted break-words whitespace-normal">{t("incognitoKeyboardDesc")}</p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-medium text-text-primary">
+                    {t("incognitoKeyboard")}
+                  </h4>
+                  <p className="text-sm text-text-muted">
+                    {t("incognitoKeyboardDesc")}
+                  </p>
                 </div>
-                <Switch checked={incognitoKeyboard} onCheckedChange={setIncognitoKeyboard} className="flex-shrink-0" />
+                <Switch
+                  checked={incognitoKeyboard}
+                  onCheckedChange={setIncognitoKeyboard}
+                />
               </div>
             </div>
           </div>
 
           {/* Privacy Settings */}
           <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("privacy")}</h3>
-
+            <h3 className="text-lg font-semibold text-text-primary mb-3">
+              {t("privacy")}
+            </h3>
             <div className="space-y-4">
-              <div className="flex items-start sm:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="font-medium text-text-primary">{t("readReceipts")}</h4>
-                  <p className="text-sm text-text-muted break-words whitespace-normal">{t("readReceiptsDesc")}</p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-medium text-text-primary">
+                    {t("readReceipts")}
+                  </h4>
+                  <p className="text-sm text-text-muted">
+                    {t("readReceiptsDesc")}
+                  </p>
                 </div>
-                <Switch checked={readReceipts} onCheckedChange={setReadReceipts} className="flex-shrink-0" />
+                <Switch
+                  checked={readReceipts}
+                  onCheckedChange={setReadReceipts}
+                />
               </div>
-
-              <div className="flex items-start sm:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <h4 className="font-medium text-text-primary">{t("typingIndicators")}</h4>
-                  <p className="text-sm text-text-muted break-words whitespace-normal">{t("typingIndicatorsDesc")}</p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="font-medium text-text-primary">
+                    {t("typingIndicators")}
+                  </h4>
+                  <p className="text-sm text-text-muted">
+                    {t("typingIndicatorsDesc")}
+                  </p>
                 </div>
-                <Switch checked={typingIndicators} onCheckedChange={setTypingIndicators} className="flex-shrink-0" />
+                <Switch
+                  checked={typingIndicators}
+                  onCheckedChange={setTypingIndicators}
+                />
               </div>
             </div>
           </div>
 
-          {/* Advanced Options */}
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary mb-4">{t("about")}</h3>
-
-            <div className="space-y-4">
-              {/* ✅ MOBILE FIX: nicht mehr "justify-between" -> flex-col auf mobile, Icon rechts unten */}
-              <Button
-                variant="outline"
-                className="
-                  w-full bg-bg-dark border-border hover:bg-muted/50
-                  text-left h-auto p-4
-                "
-              >
-                <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("exportKeys")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">{t("exportKeysDesc")}</p>
-                  </div>
-                  <div className="self-end sm:self-auto flex-shrink-0">
-                    <Key className="w-5 h-5 text-text-muted" />
-                  </div>
-                </div>
-              </Button>
-
-              <Button
-                variant="outline"
-                className="
-                  w-full bg-bg-dark border-border hover:bg-muted/50
-                  text-left h-auto p-4
-                "
-              >
-                <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("verifySecurityNumber")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">
-                      {t("verifySecurityNumberDesc")}
-                    </p>
-                  </div>
-                  <div className="self-end sm:self-auto flex-shrink-0">
-                    <Shield className="w-5 h-5 text-accent" />
-                  </div>
-                </div>
-              </Button>
-
-              <Button
-                variant="outline"
-                className="
-                  w-full bg-bg-dark border-border hover:bg-muted/50
-                  text-left h-auto p-4
-                "
-                onClick={handleDeleteAccount}
-              >
-                <div className="w-full flex flex-col sm:flex-row sm:items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-text-primary">{t("permanentAccount")}</h4>
-                    <p className="text-sm text-text-muted break-words whitespace-normal">
-                      {t("permanentAccountDescription")}
-                    </p>
-                  </div>
-                  <div className="self-end sm:self-auto flex-shrink-0">
-                    <Info className="w-5 h-5 text-primary" />
-                  </div>
-                </div>
-              </Button>
-            </div>
-          </div>
-
-          {/* About Footer */}
-          <div className="border-t border-border pt-6">
-            <div className="text-center space-y-2">
-              {/* ✅ Whispergram -> VelumChat */}
-              <p className="text-sm text-text-muted">VelumChat v1.0.0</p>
-
-              <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm">
-                <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("privacyPolicy")}
-                </Button>
-                <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("sourceCode")}
-                </Button>
-                <Button variant="link" className="text-primary hover:text-primary/80 p-0 h-auto">
-                  {t("securityAudit")}
-                </Button>
+          {/* About / Info sehr klein unten */}
+          <div className="border-t border-border/50 pt-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-text-muted">
+                <Shield className="w-4 h-4" />
+                <span>VelumChat v1.0.0</span>
               </div>
             </div>
           </div>
