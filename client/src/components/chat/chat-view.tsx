@@ -9,11 +9,16 @@ type ChatViewProps = {
   currentUser: User & { privateKey: string };
   selectedChat: (Chat & { otherUser: User }) | null;
   messages: Message[];
-  onSendMessage: (content: string, type: string, destructTimerSec: number, file?: File) => void;
+  onSendMessage: (
+    content: string,
+    type: string,
+    destructTimerSec: number,
+    file?: File
+  ) => void;
   isConnected: boolean;
   onBackToList: () => void;
 
-  // ✅ neu für Typing
+  // ✅ Typing-System
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 };
@@ -34,8 +39,8 @@ export default function ChatView({
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Tipp-Steuerung
-  const typingTimeoutRef = useRef<any>(null);
+  // ✅ Typing-Debounce (nur für WS, nicht für UI)
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
 
   // Immer nach unten scrollen, wenn sich Nachrichten ändern
@@ -44,19 +49,29 @@ export default function ChatView({
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages.length, isPartnerTyping]);
 
+  // Wenn Chat gewechselt wird → Eingabe leeren & „typing = false“
   useEffect(() => {
-    // wenn Chat gewechselt wird -> Eingabe leeren & Tipp-Status beenden
     setText("");
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
     }
-  }, [selectedChat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedChat?.id, onTyping]);
+
+  // Beim Unmount sicherheitshalber Typing aus
+  useEffect(() => {
+    return () => {
+      if (onTyping && isTypingRef.current) {
+        onTyping(false);
+        isTypingRef.current = false;
+      }
+    };
+  }, [onTyping]);
 
   if (!selectedChat) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-background">
-        <p className="text-sm md:text-base text-muted-foreground text-center px-4">
+      <div className="flex-1 flex items-center justify-center bg-[#0b141a]">
+        <p className="text-sm md:text-base text-[#8696a0] text-center px-4">
           {t("selectChatToStart")}
         </p>
       </div>
@@ -69,13 +84,13 @@ export default function ChatView({
 
     if (!onTyping) return;
 
-    // Beim ersten Tastendruck: "isTyping = true"
+    // beim ersten Tastendruck → „tippt…“
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
-    // Timeout zurücksetzen: wenn X ms keine Eingabe => "isTyping = false"
+    // wenn 1,5s nichts mehr kommt → „tippt nicht mehr“
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       if (isTypingRef.current) {
@@ -96,9 +111,14 @@ export default function ChatView({
     onSendMessage(trimmed, "text", destructTimer);
     setText("");
 
+    // nach dem Senden → tippt nicht mehr
     if (onTyping && isTypingRef.current) {
       isTypingRef.current = false;
       onTyping(false);
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
     }
   };
 
@@ -116,7 +136,8 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col w-full h-full bg-[#0b141a]">
+    // ✅ volle Bildschirm-Höhe, damit der Chat nicht "kurz" aussieht
+    <div className="flex flex-col w-full h-[100dvh] bg-[#0b141a]">
       {/* Header */}
       <div className="flex items-center px-3 py-2 border-b border-[#202c33] bg-[#202c33]">
         <button
@@ -153,7 +174,9 @@ export default function ChatView({
             return (
               <div
                 key={m.id}
-                className={`flex w-full ${isMine ? "justify-end" : "justify-start"}`}
+                className={`flex w-full ${
+                  isMine ? "justify-end" : "justify-start"
+                }`}
               >
                 <div
                   className={
@@ -176,7 +199,7 @@ export default function ChatView({
             );
           })}
 
-          {/* ✅ Tipp-Bubble des Partners */}
+          {/* ✅ Tipp-Bubble des PARTNERS (nur wenn isPartnerTyping = true) */}
           {isPartnerTyping && (
             <div className="flex w-full justify-start mt-1">
               <div className="inline-flex items-center px-3 py-1.5 rounded-lg rounded-tl-none bg-[#202c33] text-[#e9edef] shadow-sm">
@@ -191,15 +214,17 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Input */}
+      {/* Input-Bereich */}
       <div className="px-2 sm:px-3 py-2 bg-[#202c33] border-t border-[#202c33] flex flex-col gap-2">
-        {/* Selbstzerstörungs-Timer (ganz schlicht, kannst du später schöner machen) */}
+        {/* Auto-Destruct Timer */}
         <div className="flex items-center justify-end gap-2 text-[11px] text-[#8696a0] mb-1">
           <span>{t("autoDestruct")}:</span>
           <select
             className="bg-[#111b21] text-[#e9edef] text-[11px] rounded px-2 py-1 border border-[#202c33]"
             value={destructTimer}
-            onChange={(e) => setDestructTimer(Number(e.target.value) || 86400)}
+            onChange={(e) =>
+              setDestructTimer(Number(e.target.value) || 86400)
+            }
           >
             <option value={10}>10s</option>
             <option value={60}>1m</option>
