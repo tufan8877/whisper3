@@ -160,14 +160,13 @@ export default function ChatPage() {
       isTyping,
     };
 
-    // nur senden, wenn Socket verbunden (oder queuen, wenn deine Hook das macht)
     console.log("⌨️ TYPING EVENT:", payload);
     socket.send(payload);
   };
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen flex items-center justify-center overflow-x-hidden">
+      <div className="h-[100dvh] md:h-screen flex items-center justify-center overflow-x-hidden">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
           <p className="text-text-muted">Loading your secure session...</p>
@@ -177,12 +176,12 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen w-full max-w-full overflow-x-hidden flex flex-col md:flex-row bg-background chat-container">
+    <div className="h-[100dvh] md:h-screen w-full max-w-full overflow-hidden flex flex-col md:flex-row bg-background chat-container">
       {/* Sidebar */}
       <div
         className={`${
           selectedChat ? "hidden md:flex" : "flex"
-        } md:flex w-full md:w-[380px] min-w-0 max-w-full overflow-x-hidden`}
+        } md:flex w-full md:w-[380px] min-w-0 min-h-0 max-w-full overflow-x-hidden`}
       >
         <WhatsAppSidebar
           currentUser={currentUser}
@@ -213,7 +212,7 @@ export default function ChatPage() {
       <div
         className={`${
           selectedChat ? "flex" : "hidden md:flex"
-        } flex-1 min-w-0 w-full max-w-full overflow-x-hidden chat-safe`}
+        } flex-1 min-w-0 min-h-0 w-full max-w-full overflow-hidden chat-safe`}
       >
         <ChatView
           currentUser={currentUser}
