@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import WhatsAppSidebar from "@/components/chat/whatsapp-sidebar";
 import ChatView from "@/components/chat/chat-view";
@@ -13,7 +13,9 @@ export default function ChatPage() {
   const [, setLocation] = useLocation();
   const [showSettings, setShowSettings] = useState(false);
 
-  const [currentUser, setCurrentUser] = useState<(User & { privateKey: string }) | null>(null);
+  const [currentUser, setCurrentUser] = useState<
+    (User & { privateKey: string; token?: string }) | null
+  >(null);
 
   useEffect(() => {
     const initializeUser = async () => {
@@ -39,6 +41,7 @@ export default function ChatPage() {
         setCurrentUser(user);
       } catch (error) {
         console.error("Failed to parse user data:", error);
+        console.log("🚫 WICKR-ME-PROTECTION: NOT removing user data on parse error");
         setLocation("/");
       }
     };
@@ -57,8 +60,44 @@ export default function ChatPage() {
     selectedChat,
     loadPersistentContacts,
     unreadCounts,
-    deleteChat, // ✅ NEW
+    deleteChat,
+    typingByChat,
   } = usePersistentChats(currentUser?.id, socket);
+
+  useEffect(() => {
+    console.log("🚨 CHAT PAGE STATE CHECK:", {
+      userId: currentUser?.id,
+      chatsCount: chats?.length || 0,
+      messagesCount: messages?.length || 0,
+      selectedChatId: selectedChat?.id,
+      isConnected: socket?.isConnected,
+      chatsWithUnreadCounts: chats?.map((c: any) => ({
+        id: c.id,
+        otherUser: c.otherUser?.username,
+        unreadCount: c.unreadCount,
+      })),
+    });
+  }, [currentUser?.id, chats, messages, selectedChat, socket]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    const isMobile =
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent
+      );
+
+    if (isMobile) {
+      console.log("📱 Mobile: Setting up chat list refresh system");
+      const mobileRefreshInterval = setInterval(() => {
+        console.log("📱 Mobile: Periodic chat list refresh");
+        queryClient.invalidateQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
+        queryClient.refetchQueries({ queryKey: [`/api/chats/${currentUser.id}`] });
+      }, 2000);
+
+      return () => clearInterval(mobileRefreshInterval);
+    }
+  }, [currentUser?.id]);
 
   useEffect(() => {
     console.log("Chat status:", {
@@ -67,16 +106,63 @@ export default function ChatPage() {
     });
   }, [currentUser, socket]);
 
-  // ✅ destructTimer in SEKUNDEN
-  const handleSendMessage = (content: string, type: string, destructTimer: number, file?: File) => {
+  // ✅ Senden (Sekunden)
+  const handleSendMessage = (
+    content: string,
+    type: string,
+    destructTimer: number,
+    file?: File
+  ) => {
+    console.log("📤 NEUE NACHRICHT:", {
+      content: content.substring(0, 20),
+      type,
+      receiverId: selectedChat?.otherUser?.id,
+      destructTimer: destructTimer + "s",
+      currentUserId: currentUser?.id,
+    });
+
     if (!currentUser?.id) {
+      console.log("❌ Benutzer nicht angemeldet");
       setLocation("/");
       return;
     }
-    if (!selectedChat?.otherUser?.id) return;
+
+    if (!selectedChat?.otherUser?.id) {
+      console.log("❌ Kein Chat oder Empfänger ausgewählt");
+      return;
+    }
 
     const destructTimerSec = Math.max(Number(destructTimer) || 0, 5);
+
+    console.log(
+      `⏰ SELBSTLÖSCHUNG in ${destructTimerSec}s konfiguriert (Sekunden)`
+    );
+
     sendMessage(content, type, destructTimerSec, file);
+  };
+
+  // ✅ Tipp-Status des Partners (für aktuellen Chat)
+  const isPartnerTyping = useMemo(() => {
+    if (!selectedChat) return false;
+    return typingByChat.get(selectedChat.id) ?? false;
+  }, [typingByChat, selectedChat]);
+
+  // ✅ Tipp-Events vom Input nach WebSocket schicken
+  const handleTyping = (isTyping: boolean) => {
+    if (!socket?.send) return;
+    if (!currentUser?.id || !selectedChat?.otherUser?.id || !selectedChat?.id) return;
+
+    const payload = {
+      type: "typing",
+      chatId: selectedChat.id,
+      senderId: currentUser.id,
+      receiverId: selectedChat.otherUser.id,
+      isTyping,
+    };
+
+    // nur senden, wenn Socket verbunden (oder queuen, wenn deine Hook das macht)
+    console.log("⌨️ TYPING EVENT:", payload);
+    socket.send(payload);
   };
 
   if (!currentUser) {
@@ -92,31 +178,55 @@ export default function ChatPage() {
 
   return (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden flex flex-col md:flex-row bg-background chat-container">
-      <div className={`${selectedChat ? "hidden md:flex" : "flex"} md:flex w-full md:w-[380px] min-w-0 max-w-full overflow-x-hidden`}>
+      {/* Sidebar */}
+      <div
+        className={`${
+          selectedChat ? "hidden md:flex" : "flex"
+        } md:flex w-full md:w-[380px] min-w-0 max-w-full overflow-x-hidden`}
+      >
         <WhatsAppSidebar
           currentUser={currentUser}
           chats={chats as any}
           selectedChat={selectedChat}
-          onSelectChat={(chat: any) => selectChat(chat)}
+          onSelectChat={(chat: any) => {
+            console.log(`💬 WHATSAPP-CHAT: ${chat.otherUser.username} einzeln beigetreten`);
+            console.log("DEBUG: Selected chat object:", chat);
+            console.log("DEBUG: Chat unreadCount:", chat.unreadCount);
+            selectChat(chat);
+          }}
           onOpenSettings={() => setShowSettings(true)}
           isConnected={socket?.isConnected || false}
           isLoading={isLoading}
           unreadCounts={unreadCounts}
-          onRefreshChats={() => loadPersistentContacts()}
-          onDeleteChat={async (chatId) => {
-            await deleteChat(chatId); // ✅ Cutoff delete
+          onRefreshChats={() => {
+            console.log("🔄 Refreshing chat list after context menu action");
+            loadPersistentContacts();
+          }}
+          onDeleteChat={(chatId: number) => {
+            console.log("🗑 Deleting chat from sidebar:", chatId);
+            deleteChat(chatId);
           }}
         />
       </div>
 
-      <div className={`${selectedChat ? "flex" : "hidden md:flex"} flex-1 min-w-0 w-full max-w-full overflow-x-hidden chat-safe`}>
+      {/* Chat */}
+      <div
+        className={`${
+          selectedChat ? "flex" : "hidden md:flex"
+        } flex-1 min-w-0 w-full max-w-full overflow-x-hidden chat-safe`}
+      >
         <ChatView
           currentUser={currentUser}
           selectedChat={selectedChat}
           messages={messages}
           onSendMessage={handleSendMessage}
           isConnected={socket?.isConnected || false}
-          onBackToList={() => selectChat(null as any)}
+          onBackToList={() => {
+            console.log("📱 MOBILE: Zurück zur Chat-Liste - nur ein Schritt");
+            selectChat(null as any);
+          }}
+          onTyping={handleTyping}
+          isPartnerTyping={isPartnerTyping}
         />
       </div>
 
@@ -126,6 +236,7 @@ export default function ChatPage() {
           onClose={() => setShowSettings(false)}
           onUpdateUser={(user) => {
             localStorage.setItem("user", JSON.stringify(user));
+            setCurrentUser(user as any);
           }}
         />
       )}
