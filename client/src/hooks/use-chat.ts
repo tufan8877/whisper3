@@ -17,7 +17,6 @@ export function useChat(userId?: number, socket?: any) {
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
-      // unterstützt "token" oder "accessToken" je nachdem was du speicherst
       return user?.token || user?.accessToken || null;
     } catch {
       return null;
@@ -29,7 +28,6 @@ export function useChat(userId?: number, socket?: any) {
     async (url: string, init?: RequestInit) => {
       const token = getToken();
       if (!token) {
-        // bewusst als 401, damit du es sauber siehst
         throw new Error("Missing token");
       }
 
@@ -55,23 +53,28 @@ export function useChat(userId?: number, socket?: any) {
     [getToken]
   );
 
-  // Auto-delete expired messages from UI
+  // -----------------------------
+  // Auto-Delete (Client-Seite)
+  // -----------------------------
   const scheduleMessageDeletion = useCallback((message: Message) => {
-    const timeUntilExpiry = new Date(message.expiresAt).getTime() - Date.now();
+    const timeUntilExpiry =
+      new Date(message.expiresAt).getTime() - Date.now();
 
     if (timeUntilExpiry > 0) {
       const timer = setTimeout(() => {
-        setMessages((prev) => prev.filter((m) => m.id !== message.id));
+        setMessages(prev => prev.filter(m => m.id !== message.id));
         messageTimers.current.delete(message.id);
       }, timeUntilExpiry);
 
       messageTimers.current.set(message.id, timer);
     } else {
-      setMessages((prev) => prev.filter((m) => m.id !== message.id));
+      setMessages(prev => prev.filter(m => m.id !== message.id));
     }
   }, []);
 
-  // ✅ Fetch user's chats (MIT TOKEN)
+  // -----------------------------
+  // Chats laden
+  // -----------------------------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -81,7 +84,9 @@ export function useChat(userId?: number, socket?: any) {
     },
   });
 
-  // ✅ Fetch messages for selected chat (MIT TOKEN)
+  // -----------------------------
+  // Messages im aktuellen Chat
+  // -----------------------------
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
@@ -94,31 +99,39 @@ export function useChat(userId?: number, socket?: any) {
   useEffect(() => {
     const processMessages = async () => {
       if (Array.isArray(chatMessages)) {
-        const processedMessages = await Promise.all(
+        const processed = await Promise.all(
           chatMessages.map(async (message: any) => {
-            // decrypt nur wenn vorhanden
             if (message.messageType === "text" && message.isEncrypted) {
               try {
                 const userData = localStorage.getItem("user");
                 if (userData) {
                   const u = JSON.parse(userData);
                   if (u.privateKey) {
-                    const decrypted = await decryptMessage(message.content, u.privateKey);
+                    const decrypted = await decryptMessage(
+                      message.content,
+                      u.privateKey
+                    );
                     return { ...message, content: decrypted };
                   }
                 }
               } catch {
-                return { ...message, content: "[Decryption failed - Invalid key or corrupted data]" };
+                return {
+                  ...message,
+                  content:
+                    "[Decryption failed - Invalid key or corrupted data]",
+                };
               }
             }
             return message;
           })
         );
 
-        setMessages(processedMessages);
+        setMessages(processed);
 
-        processedMessages.forEach((m: any) => {
-          if (!messageTimers.current.has(m.id)) scheduleMessageDeletion(m);
+        processed.forEach((m: any) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
+          }
         });
       } else {
         setMessages([]);
@@ -128,14 +141,15 @@ export function useChat(userId?: number, socket?: any) {
     processMessages();
   }, [chatMessages, scheduleMessageDeletion]);
 
-  // WebSocket message handlers
+  // -----------------------------
+  // WebSocket Events
+  // -----------------------------
   useEffect(() => {
     if (!socket) return;
 
     const handleNewMessage = async (data: any) => {
       if (data.type === "new_message" && data.message) {
         const message = data.message;
-
         let decryptedMessage = { ...message };
 
         if (message.messageType === "text" && message.isEncrypted) {
@@ -144,16 +158,21 @@ export function useChat(userId?: number, socket?: any) {
             if (userData) {
               const u = JSON.parse(userData);
               if (u.privateKey) {
-                decryptedMessage.content = await decryptMessage(message.content, u.privateKey);
+                decryptedMessage.content = await decryptMessage(
+                  message.content,
+                  u.privateKey
+                );
               }
             }
           } catch {
-            decryptedMessage.content = "[Decryption failed - Invalid key or corrupted data]";
+            decryptedMessage.content =
+              "[Decryption failed - Invalid key or corrupted data]";
           }
         }
 
-        setMessages((prev) => {
-          if (prev.find((m) => m.id === message.id)) return prev;
+        setMessages(prev => {
+          // ✅ Keine doppelten Nachrichten
+          if (prev.find(m => m.id === decryptedMessage.id)) return prev;
 
           const next = [...prev, decryptedMessage];
 
@@ -166,13 +185,11 @@ export function useChat(userId?: number, socket?: any) {
 
         queryClient.invalidateQueries({ queryKey: ["chats", userId] });
         if (selectedChatId) {
-          queryClient.invalidateQueries({ queryKey: ["messages", selectedChatId] });
+          queryClient.invalidateQueries({
+            queryKey: ["messages", selectedChatId],
+          });
         }
       }
-    };
-
-    const handleMessageSent = (_data: any) => {
-      // wird über new_message sowieso reingebroadcastet
     };
 
     const handleUserStatus = (data: any) => {
@@ -182,16 +199,12 @@ export function useChat(userId?: number, socket?: any) {
     };
 
     socket.on("new_message", handleNewMessage);
-    socket.on("message_sent", handleMessageSent);
     socket.on("user_status", handleUserStatus);
 
     socket.on("message", (data: any) => {
       switch (data.type) {
         case "new_message":
           handleNewMessage(data);
-          break;
-        case "message_sent":
-          handleMessageSent(data);
           break;
         case "user_status":
           handleUserStatus(data);
@@ -202,22 +215,24 @@ export function useChat(userId?: number, socket?: any) {
     return () => {
       socket.off("message");
       socket.off("new_message", handleNewMessage);
-      socket.off("message_sent", handleMessageSent);
       socket.off("user_status", handleUserStatus);
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
+  // -----------------------------
+  // Senden
+  // -----------------------------
   const sendMessage = useCallback(
     async (
       content: string,
       messageType: string,
-      destructTimer: number,
+      destructTimer: number, // ✅ Sekunden
       receiverId: number,
       file?: File
     ) => {
       if (!socket || !userId) return;
 
-      // Chat erstellen wenn noch keiner ausgewählt
+      // Chat erzeugen falls nötig
       if (!selectedChatId) {
         try {
           const token = getToken();
@@ -257,12 +272,12 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
-        // Datei / Bild handling
+        // Datei / Bild
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
-            messageContent = await new Promise<string>((resolve) => {
-              reader.onload = (e) => resolve(e.target?.result as string);
+            messageContent = await new Promise<string>(resolve => {
+              reader.onload = e => resolve(e.target?.result as string);
               reader.readAsDataURL(file);
             });
             fileName = file.name;
@@ -271,9 +286,11 @@ export function useChat(userId?: number, socket?: any) {
             const formData = new FormData();
             formData.append("file", file);
 
-            // apiRequest kann FormData, aber falls dein apiRequest keinen Token setzt:
-            // -> am besten Upload Endpoint auch über authedFetch/fetch lösen.
-            const uploadResponse = await apiRequest("POST", "/api/upload", formData);
+            const uploadResponse = await apiRequest(
+              "POST",
+              "/api/upload",
+              formData
+            );
             const fileInfo = await uploadResponse.json();
 
             messageContent = fileInfo.url;
@@ -288,13 +305,18 @@ export function useChat(userId?: number, socket?: any) {
 
         if (messageType === "text") {
           try {
-            const chat: any = (chats as any[]).find((c) => c.id === selectedChatId);
+            const chat: any = (chats as any[]).find(
+              c => c.id === selectedChatId
+            );
             if (chat?.otherUser?.publicKey) {
-              finalContent = await encryptMessage(messageContent, chat.otherUser.publicKey);
+              finalContent = await encryptMessage(
+                messageContent,
+                chat.otherUser.publicKey
+              );
               isEncrypted = true;
             }
           } catch {
-            // fallback unencrypted
+            // Fallback unverschlüsselt
           }
         }
 
@@ -308,34 +330,22 @@ export function useChat(userId?: number, socket?: any) {
           messageType,
           fileName,
           fileSize,
-          destructTimer,
+          destructTimer, // ✅ Sekunden an Server schicken
         };
 
-        if (!socket?.isConnected || (typeof socket.isConnected === "function" && !socket.isConnected())) {
+        if (
+          !socket?.isConnected ||
+          (typeof socket.isConnected === "function" &&
+            !socket.isConnected())
+        ) {
           throw new Error("WebSocket not connected");
         }
 
         const success = socket.send(messageData);
         if (!success) throw new Error("Failed to send message");
 
-        // UI sofort aktualisieren (optimistic)
-        const tempMessage: any = {
-          id: Date.now(),
-          chatId,
-          senderId: userId,
-          receiverId,
-          content: messageContent, // unencrypted lokal anzeigen
-          messageType,
-          fileName,
-          fileSize,
-          destructTimer,
-          createdAt: new Date(),
-          expiresAt: new Date(Date.now() + destructTimer * 1000),
-          isEncrypted,
-        };
-
-        setMessages((prev) => [...prev, tempMessage]);
-        scheduleMessageDeletion(tempMessage);
+        // ❌ KEIN optimistic UI mehr → keine doppelten Nachrichten
+        // Server schickt uns die Nachricht über "new_message" zurück
       } catch (error: any) {
         toast({
           title: "Failed to send message",
@@ -344,7 +354,7 @@ export function useChat(userId?: number, socket?: any) {
         });
       }
     },
-    [socket, userId, selectedChatId, chats, toast, scheduleMessageDeletion, getToken]
+    [socket, userId, selectedChatId, chats, toast, getToken]
   );
 
   const selectChat = useCallback(
