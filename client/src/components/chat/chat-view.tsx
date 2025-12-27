@@ -1,21 +1,42 @@
+// client/src/components/chat/chat-view.tsx
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useLanguage } from "@/lib/i18n";
 import Message from "./message";
-import { Paperclip, Send, Smile, Lock, Clock, MoreVertical, Shield, ArrowLeft } from "lucide-react";
+import {
+  Paperclip,
+  Send,
+  Smile,
+  Lock,
+  Clock,
+  MoreVertical,
+  Shield,
+  ArrowLeft,
+} from "lucide-react";
 import type { User, Chat, Message as MessageType } from "@shared/schema";
 
 interface ChatViewProps {
   currentUser: User;
   selectedChat: (Chat & { otherUser: User }) | null;
   messages: MessageType[];
-  onSendMessage: (content: string, type: string, destructTimer: number, file?: File) => void;
+  onSendMessage: (
+    content: string,
+    type: string,
+    destructTimerSeconds: number,
+    file?: File
+  ) => void;
   isConnected: boolean;
   onBackToList: () => void;
 
-  // ✅ neu: Tipp-Events für WhatsApp-Style Typing zwischen Geräten
+  // Tipp-Funktion (optional)
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -28,100 +49,117 @@ export default function ChatView({
   isConnected,
   onBackToList,
   onTyping,
-  isPartnerTyping,
+  isPartnerTyping = false,
 }: ChatViewProps) {
-  // CRITICAL DEBUG LOG
-  console.log("🎯 CHATVIEW RENDER:", {
-    selectedChat: selectedChat ? selectedChat.id : "NULL",
-    otherUser: selectedChat?.otherUser?.username || "NULL",
-    hasMessages: messages?.length || 0,
-  });
-
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 minutes default
-  const [isTypingLocal, setIsTypingLocal] = useState(false);
+  // Standard 5 Minuten (300 Sekunden)
+  const [destructTimer, setDestructTimer] = useState("300");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // für eigenes Tippen → debounce
+  const typingTimeoutRef = useRef<number | undefined>(undefined);
+  const isTypingRef = useRef(false);
 
   const { t } = useLanguage();
 
-  // ----------------- Scroll-Handling (Mobile) -----------------
-  useEffect(() => {
-    if (messages.length > 0) {
-      console.log("📱 MOBILE: Auto-scrolling to bottom with new messages");
-
-      const scrollAttempts = [0, 100, 300, 500];
-      scrollAttempts.forEach((delay) => {
-        setTimeout(() => {
-          scrollToBottom();
-        }, delay);
-      });
-    }
-  }, [messages]);
-
-  useEffect(() => {
-    if (selectedChat && messages.length > 0) {
-      console.log("📱 MOBILE: Chat activated, ensuring scroll to bottom");
-      setTimeout(() => scrollToBottom(), 200);
-    }
-  }, [selectedChat, messages.length]);
-
-  useEffect(() => {
-    // Cleanup Tipp-Timer beim Unmount
-    return () => {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    };
-  }, []);
-
+  /* ===========================
+     Scroll-Logik (mobil-freundlich)
+  ============================ */
   const scrollToBottom = () => {
-    if (messagesEndRef.current) {
-      console.log("📱 MOBILE: Executing scroll to bottom");
+    if (!messagesEndRef.current) return;
 
-      messagesEndRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "end",
-        inline: "nearest",
-      });
-
-      setTimeout(() => {
-        if (messagesEndRef.current) {
-          messagesEndRef.current.scrollIntoView({ behavior: "auto" });
-        }
-      }, 100);
-    }
-  };
-
-  // ----------------- Senden -----------------
-  const handleSendMessage = () => {
-    console.log("🚀 Send button clicked:", {
-      messageInput: messageInput.trim(),
-      selectedChat: selectedChat?.id,
-      otherUserId: selectedChat?.otherUser?.id,
-      destructTimer: parseInt(destructTimer), // Sekunden
+    messagesEndRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+      inline: "nearest",
     });
 
-    if (!messageInput.trim() || !selectedChat) {
-      console.log("❌ Send blocked: missing message or chat");
-      return;
+    // kleiner "Nachkick" für iOS
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }, 100);
+  };
+
+  // bei neuen Nachrichten nach unten scrollen
+  useEffect(() => {
+    if (messages.length > 0) {
+      const delays = [0, 80, 200];
+      delays.forEach((d) => setTimeout(scrollToBottom, d));
     }
+  }, [messages.length]);
+
+  // wenn Chat gewechselt wird → nach unten
+  useEffect(() => {
+    if (selectedChat && messages.length > 0) {
+      setTimeout(scrollToBottom, 150);
+    }
+  }, [selectedChat?.id]);
+
+  // beim Chat-Wechsel Tipp-Status zurücksetzen
+  useEffect(() => {
+    if (onTyping && isTypingRef.current) {
+      onTyping(false);
+      isTypingRef.current = false;
+    }
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = undefined;
+    }
+  }, [selectedChat?.id, onTyping]);
+
+  /* ===========================
+     Eingabe & Senden
+  ============================ */
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setMessageInput(value);
+
+    if (!onTyping) return;
+
+    // erstes Zeichen → "tippt"
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      onTyping(true);
+    }
+
+    // wenn 1,5 Sekunden nix getippt → "tippt nicht"
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = window.setTimeout(() => {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        onTyping(false);
+      }
+    }, 1500);
+  };
+
+  const handleSendMessage = () => {
+    const text = messageInput.trim();
+    if (!text || !selectedChat) return;
 
     if (!isConnected) {
       alert(t("notConnected"));
       return;
     }
 
-    console.log("✅ Calling onSendMessage with timer:", parseInt(destructTimer), "seconds");
-    onSendMessage(messageInput.trim(), "text", parseInt(destructTimer)); // Sekunden
+    const timerSeconds = parseInt(destructTimer, 10) || 300; // immer Sekunden
+
+    onSendMessage(text, "text", timerSeconds);
     setMessageInput("");
 
-    // Tipp-Status zurücksetzen
-    if (onTyping && isTypingLocal) {
+    // Tipp-Status beenden
+    if (onTyping && isTypingRef.current) {
+      isTypingRef.current = false;
       onTyping(false);
     }
-    setIsTypingLocal(false);
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = undefined;
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -131,34 +169,13 @@ export default function ChatView({
     }
   };
 
-  // ----------------- Tipp-Erkennung (lokal + WebSocket) -----------------
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setMessageInput(value);
+  /* ===========================
+     Dateien / Kamera
+  ============================ */
 
-    if (!onTyping) return;
-
-    if (!isTypingLocal) {
-      setIsTypingLocal(true);
-      onTyping(true);
-    }
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTypingLocal(false);
-      onTyping(false);
-    }, 1500);
-  };
-
-  // ----------------- Datei / Kamera -----------------
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    console.log("📁 File selected:", file?.name, file?.type, "Size:", file?.size);
-
-    if (!file) {
-      console.log("❌ No file selected");
-      return;
-    }
+    if (!file) return;
 
     if (!selectedChat || !isConnected) {
       alert(t("selectChatFirst"));
@@ -171,23 +188,23 @@ export default function ChatView({
       return;
     }
 
+    const timerSeconds = parseInt(destructTimer, 10) || 300;
+
     if (file.type.startsWith("image/")) {
-      console.log("📸 Converting image to Base64...");
       const reader = new FileReader();
       reader.onload = () => {
         const base64String = reader.result as string;
-        console.log("✅ Image converted to Base64, sending...");
-        // ❗ Selbstlösch-Timer in SEKUNDEN (kein *1000!)
-        onSendMessage(base64String, "image", parseInt(destructTimer));
+        // ⚠️ immer Sekunden übergeben
+        onSendMessage(base64String, "image", timerSeconds);
       };
       reader.onerror = () => {
-        console.error("❌ Failed to read image file");
+        console.error("Failed to read image file");
         alert(t("failedToReadFile"));
       };
       reader.readAsDataURL(file);
     } else {
-      console.log("📄 Handling file upload...");
-      onSendMessage(`📎 ${file.name}`, "file", parseInt(destructTimer), file);
+      // andere Dateien → Sekunden, File mitgeben
+      onSendMessage(`📎 ${file.name}`, "file", timerSeconds, file);
     }
 
     if (fileInputRef.current) {
@@ -201,26 +218,27 @@ export default function ChatView({
       return;
     }
 
-    const cameraInput = document.createElement("input");
-    cameraInput.type = "file";
-    cameraInput.accept = "image/*";
-    cameraInput.capture = "environment";
-    cameraInput.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        console.log("📷 Camera photo captured:", file.name);
-        handleFileUpload({ target: { files: [file] } } as any);
-      }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    // @ts-ignore – HTML-Spezial-Attribut für mobile
+    input.capture = "environment";
+    input.onchange = (ev) => {
+      const f = (ev.target as HTMLInputElement).files?.[0];
+      if (!f) return;
+      handleFileUpload({ target: { files: [f] } } as any);
     };
-    cameraInput.click();
+    input.click();
   };
 
+  /* ===========================
+     Anzeige Selbstzerstörungs-Timer
+  ============================ */
   const formatDestructTimer = (seconds: number) => {
-    if (seconds < 60) return `${seconds} sec`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
-    if (seconds < 86400)
-      return `${Math.floor(seconds / 3600)} hour${Math.floor(seconds / 3600) > 1 ? "s" : ""}`;
-    return `${Math.floor(seconds / 86400)} day${Math.floor(seconds / 86400) > 1 ? "s" : ""}`;
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    return `${Math.floor(seconds / 86400)}d`;
   };
 
   if (!selectedChat) {
@@ -241,30 +259,27 @@ export default function ChatView({
     );
   }
 
-  // Tipp-Bubble anzeigen: bevorzugt vom Partner, sonst lokal
-  const showTyping = typeof isPartnerTyping === "boolean" ? isPartnerTyping : isTypingLocal;
+  const destructSeconds = parseInt(destructTimer, 10) || 300;
 
   return (
     <div className="flex-1 flex flex-col h-screen md:h-auto bg-background">
-      {/* Chat Header */}
+      {/* Header */}
       <div className="bg-background border-b border-border p-3 md:p-4 flex-shrink-0">
         <div className="flex items-center justify-between">
-          {/* MOBILE: Zurück-Button neben Profilbild */}
+          {/* Mobile Back */}
           <div className="md:hidden flex items-center mr-2">
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => {
-                console.log("📱 MOBILE: Zurück zur Chat-Liste vom Header");
-                onBackToList();
-              }}
-              className="w-10 h-10 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-full flex-shrink-0 back-button-mobile touch-target"
+              onClick={onBackToList}
+              className="w-10 h-10 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-full flex-shrink-0"
             >
               <ArrowLeft className="w-3 h-3" />
             </Button>
           </div>
+
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center avatar-mobile">
+            <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center">
               <span className="text-muted-foreground">👤</span>
             </div>
             <div>
@@ -272,21 +287,35 @@ export default function ChatView({
                 {selectedChat.otherUser.username}
               </h3>
               <div className="flex items-center space-x-2 text-sm">
-                <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`} />
-                <span className={isConnected ? "text-green-400" : "text-red-400"}>
+                <div
+                  className={`w-2 h-2 rounded-full ${
+                    isConnected ? "bg-green-500" : "bg-red-500"
+                  }`}
+                />
+                <span
+                  className={
+                    isConnected ? "text-green-400" : "text-red-400"
+                  }
+                >
                   {isConnected ? t("connected") : t("disconnected")}
                 </span>
                 <span className="text-muted-foreground">•</span>
                 <Lock className="w-3 h-3 text-accent" />
-                <span className="text-muted-foreground">{t("realTimeChat")}</span>
+                <span className="text-muted-foreground">
+                  {t("realTimeChat")}
+                </span>
               </div>
             </div>
           </div>
+
           <div className="flex items-center space-x-3">
-            {/* Timer Settings */}
+            {/* Timer */}
             <div className="flex items-center space-x-2 bg-muted/30 rounded-lg px-2 md:px-3 py-1 md:py-2">
               <Clock className="w-3 h-3 md:w-4 md:h-4 text-muted-foreground" />
-              <Select value={destructTimer} onValueChange={setDestructTimer}>
+              <Select
+                value={destructTimer}
+                onValueChange={setDestructTimer}
+              >
                 <SelectTrigger className="border-0 bg-transparent text-foreground text-xs md:text-sm h-auto p-0 min-w-[50px] md:min-w-[60px]">
                   <SelectValue />
                 </SelectTrigger>
@@ -303,6 +332,8 @@ export default function ChatView({
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Drei-Punkte-Menü wie gehabt */}
             <div className="relative">
               <Button
                 variant="ghost"
@@ -310,15 +341,15 @@ export default function ChatView({
                 className="text-muted-foreground hover:text-foreground"
                 onClick={() => {
                   const menu = document.getElementById("chat-menu");
-                  if (menu) {
-                    menu.style.display = menu.style.display === "none" ? "block" : "none";
-                  }
+                  if (!menu) return;
+                  menu.style.display =
+                    menu.style.display === "none" || !menu.style.display
+                      ? "block"
+                      : "none";
                 }}
               >
                 <MoreVertical className="w-4 h-4" />
               </Button>
-
-              {/* Dropdown Menu */}
               <div
                 id="chat-menu"
                 className="absolute right-0 top-full mt-2 w-48 bg-background border border-border rounded-lg shadow-lg z-10 py-2"
@@ -328,15 +359,18 @@ export default function ChatView({
                   className="w-full px-4 py-2 text-left text-sm text-foreground hover:bg-muted/50 transition-colors"
                   onClick={() => {
                     navigator.clipboard.writeText(
-                      t("chatWith", { username: selectedChat.otherUser.username })
+                      t("chatWith", {
+                        username: selectedChat.otherUser.username,
+                      })
                     );
-                    document.getElementById("chat-menu")!.style.display = "none";
+                    const menu = document.getElementById("chat-menu");
+                    if (menu) menu.style.display = "none";
                   }}
                 >
                   📋 {t("copyInviteLink")}
                 </button>
                 <button
-                  className="w-full px-4 py-2 text-left text-sm text-text-primary hover:bg-bg-dark transition-colors"
+                  className="w-full px-4 py-2 text-left text-sm text-foreground hover:bg-muted/50 transition-colors"
                   onClick={() => {
                     const allMessages = messages.length;
                     alert(
@@ -345,23 +379,27 @@ export default function ChatView({
                         partner: selectedChat.otherUser.username,
                       })
                     );
-                    document.getElementById("chat-menu")!.style.display = "none";
+                    const menu = document.getElementById("chat-menu");
+                    if (menu) menu.style.display = "none";
                   }}
                 >
                   📊 {t("chatStatistics")}
                 </button>
-                <div className="border-t border-border my-1"></div>
+                <div className="border-t border-border my-1" />
                 <button
                   className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-red-500/10 transition-colors"
                   onClick={() => {
                     if (
                       confirm(
-                        t("clearChatConfirm", { username: selectedChat.otherUser.username })
+                        t("clearChatConfirm", {
+                          username: selectedChat.otherUser.username,
+                        })
                       )
                     ) {
                       alert(t("clearChatImplemented"));
                     }
-                    document.getElementById("chat-menu")!.style.display = "none";
+                    const menu = document.getElementById("chat-menu");
+                    if (menu) menu.style.display = "none";
                   }}
                 >
                   🗑️ {t("clearChat")}
@@ -372,16 +410,15 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Messages Area */}
+      {/* Nachrichten-Bereich – passt auf Handy ins Display */}
       <div
-        className="flex-1 overflow-y-auto p-2 md:p-4 space-y-2 md:space-y-4 custom-scrollbar pb-safe bg-background"
+        className="flex-1 overflow-y-auto p-2 md:p-4 space-y-2 md:space-y-4 pb-safe bg-background min-h-0"
         style={{
           WebkitOverflowScrolling: "touch",
           overscrollBehavior: "contain",
-          height: "calc(100vh - 160px)",
         }}
       >
-        {/* System Message */}
+        {/* Encryption Banner + WS-Status */}
         <div className="text-center">
           <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
             <Shield className="w-4 h-4 text-accent" />
@@ -389,7 +426,9 @@ export default function ChatView({
           </div>
           <div
             className={`mt-2 text-xs px-3 py-1 rounded ${
-              isConnected ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+              isConnected
+                ? "bg-green-100 text-green-800"
+                : "bg-red-100 text-red-800"
             }`}
           >
             {isConnected
@@ -408,17 +447,23 @@ export default function ChatView({
           />
         ))}
 
-        {/* Typing Indicator (WhatsApp-Style 3 Punkte) */}
-        {showTyping && (
+        {/* Tipp-Bubble des Partners */}
+        {isPartnerTyping && (
           <div className="flex items-start space-x-2">
             <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
               <span className="text-muted-foreground text-xs">👤</span>
             </div>
             <div className="bg-surface rounded-2xl rounded-tl-md p-3">
-              <div className="typing-indicator">
+              <div className="typing-indicator flex items-center space-x-1">
                 <div className="typing-dot" />
-                <div className="typing-dot" style={{ animationDelay: "0.1s" }} />
-                <div className="typing-dot" style={{ animationDelay: "0.2s" }} />
+                <div
+                  className="typing-dot"
+                  style={{ animationDelay: "0.12s" }}
+                />
+                <div
+                  className="typing-dot"
+                  style={{ animationDelay: "0.24s" }}
+                />
               </div>
             </div>
           </div>
@@ -427,15 +472,14 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Message Input */}
-      <div className="bg-background border-t border-border p-2 md:p-4 flex-shrink-0 safe-area-inset-bottom sticky bottom-0 chat-input-area">
+      {/* Input-Bereich */}
+      <div className="bg-background border-t border-border p-2 md:p-4 flex-shrink-0 sticky bottom-0">
         <div className="flex items-end space-x-1 md:space-x-3">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => fileInputRef.current?.click()}
-            className="text-text-muted hover:text-text-primary p-2 md:p-3 touch-target"
-            title="Upload file"
+            className="text-text-muted hover:text-text-primary p-2 md:p-3"
           >
             <Paperclip className="w-4 h-4 md:w-4 md:h-4" />
           </Button>
@@ -444,18 +488,18 @@ export default function ChatView({
             variant="ghost"
             size="sm"
             onClick={handleCameraCapture}
-            className="text-text-muted hover:text-text-primary p-2 md:p-3 touch-target"
-            title="Take photo"
+            className="text-text-muted hover:text-text-primary p-2 md:p-3"
           >
             📷
           </Button>
+
           <div className="flex-1 relative">
             <Textarea
               placeholder={isConnected ? t("typeMessage") : t("connecting")}
               value={messageInput}
               onChange={handleInputChange}
               onKeyDown={handleKeyPress}
-              className="resize-none bg-background border-border text-foreground placeholder:text-muted-foreground pr-12 min-h-[44px] md:min-h-[40px] max-h-24 md:max-h-32 text-base leading-5 rounded-xl border-2 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all duration-200 chat-input touch-target"
+              className="resize-none bg-background border-border text-foreground placeholder:text-muted-foreground pr-12 min-h-[44px] md:min-h-[40px] max-h-24 md:max-h-32 text-base leading-5 rounded-xl border-2 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all duration-200"
               rows={1}
             />
             <Button
@@ -466,16 +510,17 @@ export default function ChatView({
               <Smile className="w-4 h-4" />
             </Button>
           </div>
+
           <Button
             onClick={handleSendMessage}
             disabled={!messageInput.trim() || !isConnected}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white rounded-full p-3 min-w-[48px] min-h-[48px] md:min-w-[40px] md:min-h-[40px] md:p-2 flex items-center justify-center shadow-lg hover:shadow-xl transition-all duration-200 touch-target"
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white rounded-full p-3 min-w-[48px] min-h-[48px] md:min-w-[40px] md:min-h-[40px] md:p-2 flex items-center justify-center shadow-lg hover:shadow-xl transition-all duration-200"
           >
             <Send className="w-5 h-5 md:w-4 md:h-4" />
           </Button>
         </div>
 
-        {/* Encryption Status */}
+        {/* Encryption + Timer-Info */}
         <div className="flex items-center justify-between mt-2 text-xs text-text-muted">
           <div className="flex items-center space-x-2">
             <Lock className="w-3 h-3 text-accent" />
@@ -485,8 +530,8 @@ export default function ChatView({
           <div className="flex items-center space-x-1 md:space-x-2">
             <span className="hidden md:inline">{t("autoDestruct")}:</span>
             <span className="md:hidden text-sm">⏱️</span>
-            <span className="text-destructive text-xs md:text-xs">
-              {formatDestructTimer(parseInt(destructTimer))}
+            <span className="text-destructive text-xs">
+              {formatDestructTimer(destructSeconds)}
             </span>
           </div>
         </div>
