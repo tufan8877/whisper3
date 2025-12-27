@@ -1,4 +1,3 @@
-// client/src/components/chat/chat-view.tsx
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,7 +35,7 @@ interface ChatViewProps {
   isConnected: boolean;
   onBackToList: () => void;
 
-  // Tipp-Funktion (optional)
+  // Tipp-Funktion
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -51,22 +50,23 @@ export default function ChatView({
   onTyping,
   isPartnerTyping = false,
 }: ChatViewProps) {
+  const { t } = useLanguage();
+
   const [messageInput, setMessageInput] = useState("");
-  // Standard 5 Minuten (300 Sekunden)
+  // Standard: 5 Minuten (300 Sekunden)
   const [destructTimer, setDestructTimer] = useState("300");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // für eigenes Tippen → debounce
+  // Tipp-Debounce
   const typingTimeoutRef = useRef<number | undefined>(undefined);
   const isTypingRef = useRef(false);
 
-  const { t } = useLanguage();
-
   /* ===========================
-     Scroll-Logik (mobil-freundlich)
+     Scroll-Logik
   ============================ */
+
   const scrollToBottom = () => {
     if (!messagesEndRef.current) return;
 
@@ -76,13 +76,13 @@ export default function ChatView({
       inline: "nearest",
     });
 
-    // kleiner "Nachkick" für iOS
+    // kleiner Kick für Mobile
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
-    }, 100);
+    }, 80);
   };
 
-  // bei neuen Nachrichten nach unten scrollen
+  // bei neuen Nachrichten nach unten
   useEffect(() => {
     if (messages.length > 0) {
       const delays = [0, 80, 200];
@@ -90,14 +90,14 @@ export default function ChatView({
     }
   }, [messages.length]);
 
-  // wenn Chat gewechselt wird → nach unten
+  // Chat gewechselt → nach unten
   useEffect(() => {
     if (selectedChat && messages.length > 0) {
       setTimeout(scrollToBottom, 150);
     }
   }, [selectedChat?.id]);
 
-  // beim Chat-Wechsel Tipp-Status zurücksetzen
+  // Chat-Wechsel → Tippstatus reset
   useEffect(() => {
     if (onTyping && isTypingRef.current) {
       onTyping(false);
@@ -119,13 +119,11 @@ export default function ChatView({
 
     if (!onTyping) return;
 
-    // erstes Zeichen → "tippt"
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
-    // wenn 1,5 Sekunden nix getippt → "tippt nicht"
     if (typingTimeoutRef.current) {
       window.clearTimeout(typingTimeoutRef.current);
     }
@@ -146,7 +144,7 @@ export default function ChatView({
       return;
     }
 
-    const timerSeconds = parseInt(destructTimer, 10) || 300; // immer Sekunden
+    const timerSeconds = parseInt(destructTimer, 10) || 300;
 
     onSendMessage(text, "text", timerSeconds);
     setMessageInput("");
@@ -194,7 +192,6 @@ export default function ChatView({
       const reader = new FileReader();
       reader.onload = () => {
         const base64String = reader.result as string;
-        // ⚠️ immer Sekunden übergeben
         onSendMessage(base64String, "image", timerSeconds);
       };
       reader.onerror = () => {
@@ -203,13 +200,10 @@ export default function ChatView({
       };
       reader.readAsDataURL(file);
     } else {
-      // andere Dateien → Sekunden, File mitgeben
       onSendMessage(`📎 ${file.name}`, "file", timerSeconds, file);
     }
 
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleCameraCapture = () => {
@@ -221,7 +215,7 @@ export default function ChatView({
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    // @ts-ignore – HTML-Spezial-Attribut für mobile
+    // @ts-ignore
     input.capture = "environment";
     input.onchange = (ev) => {
       const f = (ev.target as HTMLInputElement).files?.[0];
@@ -262,8 +256,8 @@ export default function ChatView({
   const destructSeconds = parseInt(destructTimer, 10) || 300;
 
   return (
-    <div className="flex-1 flex flex-col h-screen md:h-auto bg-background">
-      {/* Header */}
+    <div className="flex flex-col flex-1 bg-background h-full">
+      {/* HEADER */}
       <div className="bg-background border-b border-border p-3 md:p-4 flex-shrink-0">
         <div className="flex items-center justify-between">
           {/* Mobile Back */}
@@ -309,7 +303,7 @@ export default function ChatView({
           </div>
 
           <div className="flex items-center space-x-3">
-            {/* Timer */}
+            {/* Timer Auswahl */}
             <div className="flex items-center space-x-2 bg-muted/30 rounded-lg px-2 md:px-3 py-1 md:py-2">
               <Clock className="w-3 h-3 md:w-4 md:h-4 text-muted-foreground" />
               <Select
@@ -333,7 +327,7 @@ export default function ChatView({
               </Select>
             </div>
 
-            {/* Drei-Punkte-Menü wie gehabt */}
+            {/* Drei-Punkte-Menü (wie vorher) */}
             <div className="relative">
               <Button
                 variant="ghost"
@@ -410,70 +404,73 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Nachrichten-Bereich – passt auf Handy ins Display */}
+      {/* NACHRICHTEN-BEREICH */}
       <div
-        className="flex-1 overflow-y-auto p-2 md:p-4 space-y-2 md:space-y-4 pb-safe bg-background min-h-0"
+        className="flex-1 min-h-0 overflow-y-auto bg-background px-2 md:px-4 py-2 md:py-4"
         style={{
           WebkitOverflowScrolling: "touch",
           overscrollBehavior: "contain",
         }}
       >
-        {/* Encryption Banner + WS-Status */}
-        <div className="text-center">
-          <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
-            <Shield className="w-4 h-4 text-accent" />
-            <span>This conversation is end-to-end encrypted</span>
-          </div>
-          <div
-            className={`mt-2 text-xs px-3 py-1 rounded ${
-              isConnected
-                ? "bg-green-100 text-green-800"
-                : "bg-red-100 text-red-800"
-            }`}
-          >
-            {isConnected
-              ? "✅ WebSocket Connected"
-              : "❌ WebSocket Disconnected - Check console for errors"}
-          </div>
-        </div>
-
-        {/* Messages */}
-        {messages.map((message) => (
-          <Message
-            key={message.id}
-            message={message}
-            isOwn={message.senderId === currentUser.id}
-            otherUser={selectedChat.otherUser}
-          />
-        ))}
-
-        {/* Tipp-Bubble des Partners */}
-        {isPartnerTyping && (
-          <div className="flex items-start space-x-2">
-            <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
-              <span className="text-muted-foreground text-xs">👤</span>
+        {/* Wrapper: sorgt dafür, dass alles am BOTTOM klebt, wenn wenig Inhalt */}
+        <div className="flex flex-col justify-end min-h-full space-y-2 md:space-y-4">
+          {/* Encryption Banner + WS-Status */}
+          <div className="text-center">
+            <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
+              <Shield className="w-4 h-4 text-accent" />
+              <span>This conversation is end-to-end encrypted</span>
             </div>
-            <div className="bg-surface rounded-2xl rounded-tl-md p-3">
-              <div className="typing-indicator flex items-center space-x-1">
-                <div className="typing-dot" />
-                <div
-                  className="typing-dot"
-                  style={{ animationDelay: "0.12s" }}
-                />
-                <div
-                  className="typing-dot"
-                  style={{ animationDelay: "0.24s" }}
-                />
+            <div
+              className={`mt-2 text-xs px-3 py-1 rounded ${
+                isConnected
+                  ? "bg-green-100 text-green-800"
+                  : "bg-red-100 text-red-800"
+              }`}
+            >
+              {isConnected
+                ? "✅ WebSocket Connected"
+                : "❌ WebSocket Disconnected - Check console for errors"}
+            </div>
+          </div>
+
+          {/* Messages */}
+          {messages.map((message) => (
+            <Message
+              key={message.id}
+              message={message}
+              isOwn={message.senderId === currentUser.id}
+              otherUser={selectedChat.otherUser}
+            />
+          ))}
+
+          {/* Tipp-Bubble vom Partner */}
+          {isPartnerTyping && (
+            <div className="flex items-start space-x-2">
+              <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-muted-foreground text-xs">👤</span>
+              </div>
+              <div className="bg-surface rounded-2xl rounded-tl-md p-3">
+                <div className="typing-indicator flex items-center space-x-1">
+                  <div className="typing-dot" />
+                  <div
+                    className="typing-dot"
+                    style={{ animationDelay: "0.12s" }}
+                  />
+                  <div
+                    className="typing-dot"
+                    style={{ animationDelay: "0.24s" }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      {/* Input-Bereich */}
-      <div className="bg-background border-t border-border p-2 md:p-4 flex-shrink-0 sticky bottom-0">
+      {/* INPUT-BEREICH */}
+      <div className="bg-background border-t border-border p-2 md:p-4 flex-shrink-0">
         <div className="flex items-end space-x-1 md:space-x-3">
           <Button
             variant="ghost"
@@ -520,7 +517,6 @@ export default function ChatView({
           </Button>
         </div>
 
-        {/* Encryption + Timer-Info */}
         <div className="flex items-center justify-between mt-2 text-xs text-text-muted">
           <div className="flex items-center space-x-2">
             <Lock className="w-3 h-3 text-accent" />
