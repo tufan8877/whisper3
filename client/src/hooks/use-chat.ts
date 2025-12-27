@@ -13,7 +13,9 @@ export function useChat(userId?: number, socket?: any) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // ✅ Token helper
+  // ==========================
+  // Token helper
+  // ==========================
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -23,7 +25,9 @@ export function useChat(userId?: number, socket?: any) {
     }
   }, []);
 
-  // ✅ Fetch helper mit Bearer Token
+  // ==========================
+  // Fetch helper mit Bearer-Token
+  // ==========================
   const authedFetch = useCallback(
     async (url: string, init?: RequestInit) => {
       const token = getToken();
@@ -44,7 +48,9 @@ export function useChat(userId?: number, socket?: any) {
         try {
           const body = await res.json();
           msg = body?.message || msg;
-        } catch {}
+        } catch {
+          // ignore
+        }
         throw new Error(msg);
       }
 
@@ -53,28 +59,28 @@ export function useChat(userId?: number, socket?: any) {
     [getToken]
   );
 
-  // -----------------------------
-  // Auto-Delete (Client-Seite)
-  // -----------------------------
+  // ==========================
+  // Auto-delete (UI) planen
+  // ==========================
   const scheduleMessageDeletion = useCallback((message: Message) => {
     const timeUntilExpiry =
       new Date(message.expiresAt).getTime() - Date.now();
 
     if (timeUntilExpiry > 0) {
       const timer = setTimeout(() => {
-        setMessages(prev => prev.filter(m => m.id !== message.id));
+        setMessages((prev) => prev.filter((m) => m.id !== message.id));
         messageTimers.current.delete(message.id);
       }, timeUntilExpiry);
 
       messageTimers.current.set(message.id, timer);
     } else {
-      setMessages(prev => prev.filter(m => m.id !== message.id));
+      setMessages((prev) => prev.filter((m) => m.id !== message.id));
     }
   }, []);
 
-  // -----------------------------
-  // Chats laden
-  // -----------------------------
+  // ==========================
+  // Chats holen
+  // ==========================
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -84,9 +90,9 @@ export function useChat(userId?: number, socket?: any) {
     },
   });
 
-  // -----------------------------
-  // Messages im aktuellen Chat
-  // -----------------------------
+  // ==========================
+  // Messages für ausgewählten Chat holen
+  // ==========================
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
@@ -96,10 +102,13 @@ export function useChat(userId?: number, socket?: any) {
     },
   });
 
+  // ==========================
+  // Messages entschlüsseln + Timer planen
+  // ==========================
   useEffect(() => {
     const processMessages = async () => {
       if (Array.isArray(chatMessages)) {
-        const processed = await Promise.all(
+        const processedMessages = await Promise.all(
           chatMessages.map(async (message: any) => {
             if (message.messageType === "text" && message.isEncrypted) {
               try {
@@ -126,9 +135,9 @@ export function useChat(userId?: number, socket?: any) {
           })
         );
 
-        setMessages(processed);
+        setMessages(processedMessages);
 
-        processed.forEach((m: any) => {
+        processedMessages.forEach((m: any) => {
           if (!messageTimers.current.has(m.id)) {
             scheduleMessageDeletion(m);
           }
@@ -141,9 +150,9 @@ export function useChat(userId?: number, socket?: any) {
     processMessages();
   }, [chatMessages, scheduleMessageDeletion]);
 
-  // -----------------------------
-  // WebSocket Events
-  // -----------------------------
+  // ==========================
+  // WebSocket-Handler
+  // ==========================
   useEffect(() => {
     if (!socket) return;
 
@@ -170,14 +179,14 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
-        setMessages(prev => {
-          // ✅ Keine doppelten Nachrichten
-          if (prev.find(m => m.id === decryptedMessage.id)) return prev;
+        setMessages((prev) => {
+          // ❗ kein Duplikat per ID
+          if (prev.find((m) => m.id === message.id)) return prev;
 
           const next = [...prev, decryptedMessage];
 
           if (!messageTimers.current.has(decryptedMessage.id)) {
-            scheduleMessageDeletion(decryptedMessage);
+            scheduleMessageDeletion(decryptedMessage as any);
           }
 
           return next;
@@ -192,6 +201,10 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
+    const handleMessageSent = (_data: any) => {
+      // wir verlassen uns auf new_message Broadcast
+    };
+
     const handleUserStatus = (data: any) => {
       if (data.type === "user_status") {
         queryClient.invalidateQueries({ queryKey: ["chats", userId] });
@@ -199,12 +212,16 @@ export function useChat(userId?: number, socket?: any) {
     };
 
     socket.on("new_message", handleNewMessage);
+    socket.on("message_sent", handleMessageSent);
     socket.on("user_status", handleUserStatus);
 
     socket.on("message", (data: any) => {
       switch (data.type) {
         case "new_message":
           handleNewMessage(data);
+          break;
+        case "message_sent":
+          handleMessageSent(data);
           break;
         case "user_status":
           handleUserStatus(data);
@@ -215,24 +232,25 @@ export function useChat(userId?: number, socket?: any) {
     return () => {
       socket.off("message");
       socket.off("new_message", handleNewMessage);
+      socket.off("message_sent", handleMessageSent);
       socket.off("user_status", handleUserStatus);
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
-  // -----------------------------
-  // Senden
-  // -----------------------------
+  // ==========================
+  // Nachricht senden
+  // ==========================
   const sendMessage = useCallback(
     async (
       content: string,
       messageType: string,
-      destructTimer: number, // ✅ Sekunden
+      destructTimer: number, // SECONDS!
       receiverId: number,
       file?: File
     ) => {
       if (!socket || !userId) return;
 
-      // Chat erzeugen falls nötig
+      // Chat ggf. zuerst anlegen
       if (!selectedChatId) {
         try {
           const token = getToken();
@@ -272,12 +290,15 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
+        // ======================
         // Datei / Bild
+        // ======================
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
-            messageContent = await new Promise<string>(resolve => {
-              reader.onload = e => resolve(e.target?.result as string);
+            messageContent = await new Promise<string>((resolve) => {
+              reader.onload = (e) =>
+                resolve(e.target?.result as string);
               reader.readAsDataURL(file);
             });
             fileName = file.name;
@@ -299,14 +320,16 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
-        // Encrypt text messages
+        // ======================
+        // Text verschlüsseln
+        // ======================
         let finalContent = messageContent;
         let isEncrypted = false;
 
         if (messageType === "text") {
           try {
             const chat: any = (chats as any[]).find(
-              c => c.id === selectedChatId
+              (c) => c.id === selectedChatId
             );
             if (chat?.otherUser?.publicKey) {
               finalContent = await encryptMessage(
@@ -316,7 +339,7 @@ export function useChat(userId?: number, socket?: any) {
               isEncrypted = true;
             }
           } catch {
-            // Fallback unverschlüsselt
+            // not fatal
           }
         }
 
@@ -330,7 +353,7 @@ export function useChat(userId?: number, socket?: any) {
           messageType,
           fileName,
           fileSize,
-          destructTimer, // ✅ Sekunden an Server schicken
+          destructTimer, // SECONDS an Server
         };
 
         if (
@@ -344,8 +367,8 @@ export function useChat(userId?: number, socket?: any) {
         const success = socket.send(messageData);
         if (!success) throw new Error("Failed to send message");
 
-        // ❌ KEIN optimistic UI mehr → keine doppelten Nachrichten
-        // Server schickt uns die Nachricht über "new_message" zurück
+        // ❌ KEIN optimistic UI -> keine Doppel-Nachrichten mehr
+        // Server schickt "new_message" mit richtiger ID, dann wird es angezeigt.
       } catch (error: any) {
         toast({
           title: "Failed to send message",
@@ -357,6 +380,9 @@ export function useChat(userId?: number, socket?: any) {
     [socket, userId, selectedChatId, chats, toast, getToken]
   );
 
+  // ==========================
+  // Chat auswählen
+  // ==========================
   const selectChat = useCallback(
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
