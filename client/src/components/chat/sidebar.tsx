@@ -1,13 +1,26 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useLanguage } from "@/lib/i18n";
-import { Settings, Plus, Search, KeyRound, Shield, Clock, LogOut } from "lucide-react";
+import {
+  Settings,
+  Plus,
+  Search,
+  KeyRound,
+  Shield,
+  Clock,
+  LogOut,
+} from "lucide-react";
 import type { User, Chat } from "@shared/schema";
 import logoPath from "@assets/whispergram Logo_1752171096580.jpg";
 import ChatContextMenu from "./chat-context-menu";
@@ -15,7 +28,7 @@ import ChatContextMenu from "./chat-context-menu";
 interface SidebarProps {
   currentUser: User;
   chats: Array<Chat & { otherUser: User; lastMessage?: any }>;
-  selectedChat: Chat & { otherUser: User } | null;
+  selectedChat: (Chat & { otherUser: User }) | null;
   onSelectChat: (chat: Chat & { otherUser: User }) => void;
   onOpenSettings: () => void;
   isConnected: boolean;
@@ -41,47 +54,90 @@ export default function Sidebar({
   const [, setLocation] = useLocation();
   const { t } = useLanguage();
 
+  // 👉 Scroll-Ref für die Chatliste
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // Beim Anzeigen der Sidebar IMMER ganz nach oben scrollen
+  useEffect(() => {
+    // Fenster nach oben
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+
+    // Chatliste nach oben
+    if (listRef.current) {
+      listRef.current.scrollTop = 0;
+    }
+  }, []);
+
   const { data: searchResults } = useQuery({
     queryKey: ["search-users", searchQuery, currentUser.id],
     enabled: searchQuery.length > 2,
     queryFn: async () => {
-      const response = await apiRequest("GET", `/api/search-users?q=${encodeURIComponent(searchQuery)}&excludeId=${currentUser.id}`);
+      const response = await apiRequest(
+        "GET",
+        `/api/search-users?q=${encodeURIComponent(
+          searchQuery
+        )}&excludeId=${currentUser.id}`
+      );
       return response.json();
     },
   });
 
   const handleStartChat = async (user: User) => {
     try {
-      console.log("🚀 Starting SEPARATE 1:1 chat with user:", user.username, "ID:", user.id);
-      console.log("🔍 Current user ID:", currentUser.id);
-      
-      // First check if chat already exists between these specific users
-      const existingChat = chats.find(chat => 
-        chat.otherUser.id === user.id
+      console.log(
+        "🚀 Starting SEPARATE 1:1 chat with user:",
+        user.username,
+        "ID:",
+        user.id
       );
-      
+      console.log("🔍 Current user ID:", currentUser.id);
+
+      // First check if chat already exists between these specific users
+      const existingChat = chats.find(
+        (chat) => chat.otherUser.id === user.id
+      );
+
       if (existingChat) {
-        console.log('💬 Found existing 1:1 chat:', existingChat.id, 'between', currentUser.id, 'and', user.id);
+        console.log(
+          "💬 Found existing 1:1 chat:",
+          existingChat.id,
+          "between",
+          currentUser.id,
+          "and",
+          user.id
+        );
         onSelectChat(existingChat);
         setShowNewChatDialog(false);
         setSearchQuery("");
         return;
       }
-      
-      // Create new SEPARATED chat for these specific users  
-      console.log('💬 Creating NEW 1:1 chat between users:', currentUser.id, 'and', user.id);
+
+      // Create new SEPARATED chat for these specific users
+      console.log(
+        "💬 Creating NEW 1:1 chat between users:",
+        currentUser.id,
+        "and",
+        user.id
+      );
       const response = await apiRequest("POST", "/api/chats", {
         participant1Id: currentUser.id,
         participant2Id: user.id,
       });
       const chat = await response.json();
-      console.log("✅ NEW 1:1 chat created with ID:", chat.id, 'for users', currentUser.id, 'and', user.id);
-      
+      console.log(
+        "✅ NEW 1:1 chat created with ID:",
+        chat.id,
+        "for users",
+        currentUser.id,
+        "and",
+        user.id
+      );
+
       const chatWithUser = { ...chat, otherUser: user };
       onSelectChat(chatWithUser);
       setShowNewChatDialog(false);
       setSearchQuery("");
-      
+
       console.log("✅ 1:1 Chat selected:", chatWithUser.id);
     } catch (error) {
       console.error("❌ Failed to start 1:1 chat:", error);
@@ -90,7 +146,9 @@ export default function Sidebar({
 
   const handleLogout = () => {
     // WICKR-ME-STYLE: Never delete user data, preserve profile permanently
-    console.log("🚫 WICKR-ME-LOGOUT: Preserving user profile, only ending session");
+    console.log(
+      "🚫 WICKR-ME-LOGOUT: Preserving user profile, only ending session"
+    );
     setLocation("/");
   };
 
@@ -117,17 +175,25 @@ export default function Sidebar({
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center overflow-hidden">
-                <img 
-                  src="/attached_assets/whispergram Logo_1752171096580.jpg" 
-                  alt="Whispergram Logo" 
+                <img
+                  src={logoPath}
+                  alt="Whispergram Logo"
                   className="w-full h-full object-cover"
                 />
               </div>
               <div>
-                <h2 className="font-semibold text-text-primary">{currentUser.username}</h2>
+                <h2 className="font-semibold text-text-primary">
+                  {currentUser.username}
+                </h2>
                 <div className="flex items-center space-x-1">
-                  <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-accent' : 'bg-destructive'}`} />
-                  <span className="text-xs text-accent">{isConnected ? t('online') : 'Connecting...'}</span>
+                  <div
+                    className={`w-2 h-2 rounded-full ${
+                      isConnected ? "bg-accent" : "bg-destructive"
+                    }`}
+                  />
+                  <span className="text-xs text-accent">
+                    {isConnected ? t("online") : "Connecting..."}
+                  </span>
                 </div>
               </div>
             </div>
@@ -166,17 +232,20 @@ export default function Sidebar({
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-text-muted z-10 pointer-events-none" />
             <Input
-              placeholder={t('searchUsers')}
+              placeholder={t("searchUsers")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-12 pr-4 py-3 bg-gray-800 border-border text-white placeholder:text-gray-400 h-12 text-sm"
-              style={{ textIndent: '8px' }}
+              style={{ textIndent: "8px" }}
             />
           </div>
         </div>
 
         {/* Active Chats */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <div
+          ref={listRef}
+          className="flex-1 overflow-y-auto custom-scrollbar"
+        >
           {isLoading ? (
             <div className="p-4 text-center">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
@@ -185,13 +254,17 @@ export default function Sidebar({
           ) : !chats || chats.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-text-muted text-sm">No chats yet</p>
-              <p className="text-text-muted text-xs mt-1">{t('startChat')}</p>
+              <p className="text-text-muted text-xs mt-1">
+                {t("startChat")}
+              </p>
             </div>
           ) : (
             (chats || []).map((chat) => (
               <div
                 key={chat.id}
-                className={`chat-item ${selectedChat?.id === chat.id ? 'bg-muted/50' : ''}`}
+                className={`chat-item ${
+                  selectedChat?.id === chat.id ? "bg-muted/50" : ""
+                }`}
                 onClick={() => onSelectChat(chat)}
               >
                 <div className="flex items-center space-x-3">
@@ -211,30 +284,27 @@ export default function Sidebar({
                       <div className="flex items-center space-x-2">
                         {chat.lastMessage && (
                           <span className="text-xs text-text-muted">
-                            {formatLastMessageTime(chat.lastMessage.createdAt)}
+                            {formatLastMessageTime(
+                              chat.lastMessage.createdAt
+                            )}
                           </span>
                         )}
                         <ChatContextMenu
                           currentUser={currentUser}
                           chat={chat}
                           onChatDeleted={() => {
-                            // Refresh the chat list after deletion
                             if (onRefreshChats) {
                               onRefreshChats();
                             }
-                            // If this was the selected chat, clear selection
                             if (selectedChat?.id === chat.id) {
-                              // Reset selection by passing null
                               const nullChat = null as any;
                               onSelectChat(nullChat);
                             }
                           }}
                           onUserBlocked={() => {
-                            // Refresh the chat list after blocking
                             if (onRefreshChats) {
                               onRefreshChats();
                             }
-                            // If this was the selected chat, clear selection
                             if (selectedChat?.id === chat.id) {
                               const nullChat = null as any;
                               onSelectChat(nullChat);
@@ -262,15 +332,15 @@ export default function Sidebar({
                         )}
                       </p>
                       <div className="flex items-center space-x-2">
-                        {/* WhatsApp-style unread message count */}
-                        {unreadCounts.has(chat.id) && unreadCounts.get(chat.id)! > 0 && (
-                          <Badge 
-                            variant="default" 
-                            className="bg-green-500 hover:bg-green-600 text-white text-xs px-2 py-1 rounded-full min-w-[20px] h-5 flex items-center justify-center font-medium"
-                          >
-                            {unreadCounts.get(chat.id)}
-                          </Badge>
-                        )}
+                        {unreadCounts.has(chat.id) &&
+                          unreadCounts.get(chat.id)! > 0 && (
+                            <Badge
+                              variant="default"
+                              className="bg-green-500 hover:bg-green-600 text-white text-xs px-2 py-1 rounded-full min-w-[20px] h-5 flex items-center justify-center font-medium"
+                            >
+                              {unreadCounts.get(chat.id)}
+                            </Badge>
+                          )}
                         {chat.lastMessage && (
                           <Clock className="w-3 h-3 text-text-muted" />
                         )}
@@ -288,7 +358,11 @@ export default function Sidebar({
           <div className="flex items-center space-x-2 text-sm">
             <Shield className="w-4 h-4 text-accent" />
             <span className="text-text-muted">Encrypted • </span>
-            <span className={isConnected ? "text-accent" : "text-destructive"}>
+            <span
+              className={
+                isConnected ? "text-accent" : "text-destructive"
+              }
+            >
               {isConnected ? "Connected" : "Disconnected"}
             </span>
           </div>
@@ -296,10 +370,15 @@ export default function Sidebar({
       </div>
 
       {/* New Chat Dialog */}
-      <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
+      <Dialog
+        open={showNewChatDialog}
+        onOpenChange={setShowNewChatDialog}
+      >
         <DialogContent className="bg-surface border-border">
           <DialogHeader>
-            <DialogTitle className="text-foreground">Start New Chat</DialogTitle>
+            <DialogTitle className="text-foreground">
+              Start New Chat
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <Input
@@ -321,11 +400,19 @@ export default function Sidebar({
                         <KeyRound className="w-4 h-4 text-muted-foreground" />
                       </div>
                       <div>
-                        <p className="font-medium text-white">{user.username}</p>
+                        <p className="font-medium text-white">
+                          {user.username}
+                        </p>
                         <div className="flex items-center space-x-1">
-                          <div className={`w-2 h-2 rounded-full ${user.isOnline ? 'bg-accent' : 'bg-muted-foreground'}`} />
+                          <div
+                            className={`w-2 h-2 rounded-full ${
+                              user.isOnline
+                                ? "bg-accent"
+                                : "bg-muted-foreground"
+                            }`}
+                          />
                           <span className="text-xs text-muted-foreground">
-                            {user.isOnline ? 'Online' : 'Offline'}
+                            {user.isOnline ? "Online" : "Offline"}
                           </span>
                         </div>
                       </div>
@@ -337,11 +424,12 @@ export default function Sidebar({
                 ))}
               </div>
             )}
-            {searchQuery.length > 2 && (!searchResults || searchResults.length === 0) && (
-              <p className="text-muted-foreground text-sm text-center py-4">
-                No users found with that username
-              </p>
-            )}
+            {searchQuery.length > 2 &&
+              (!searchResults || searchResults.length === 0) && (
+                <p className="text-muted-foreground text-sm text-center py-4">
+                  No users found with that username
+                </p>
+              )}
           </div>
         </DialogContent>
       </Dialog>
