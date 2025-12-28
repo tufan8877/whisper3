@@ -34,7 +34,6 @@ interface ChatViewProps {
   ) => void;
   isConnected: boolean;
   onBackToList: () => void;
-  // optional: Tipp-Indikator vom Partner
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -51,15 +50,15 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 min default (Sekunden)
+  const [destructTimer, setDestructTimer] = useState("300"); // 5m in Sekunden
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Tipp-Status (nur nach außen melden, Anzeige kommt von isPartnerTyping)
+  // Tipp-Indikator (nur ans Backend senden – Anzeige kommt über isPartnerTyping)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingSelfRef = useRef(false);
 
-  // Auto-Scroll ans Ende
+  // Immer ans Ende scrollen, wenn Nachrichten kommen
   useEffect(() => {
     if (!messagesEndRef.current) return;
     messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
@@ -77,7 +76,6 @@ export default function ChatView({
     onSendMessage(text, "text", parseInt(destructTimer, 10));
     setMessageInput("");
 
-    // eigenes Tipp-Signal wieder aus
     if (onTyping && isTypingSelfRef.current) {
       isTypingSelfRef.current = false;
       onTyping(false);
@@ -91,7 +89,6 @@ export default function ChatView({
       return;
     }
 
-    // Tipp-Events nur bei Eingabe
     if (!onTyping) return;
 
     if (!isTypingSelfRef.current) {
@@ -100,7 +97,7 @@ export default function ChatView({
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      if (isTypingSelfRef.current) {
+      if (isTypingSelfRefRef.current) {
         isTypingSelfRef.current = false;
         onTyping(false);
       }
@@ -110,6 +107,7 @@ export default function ChatView({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     if (!selectedChat || !isConnected) {
       alert(t("selectChatFirst"));
       return;
@@ -156,9 +154,7 @@ export default function ChatView({
     cameraInput.onchange = (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (file) {
-        handleFileUpload({
-          target: { files: [file] },
-        } as any);
+        handleFileUpload({ target: { files: [file] } } as any);
       }
     };
     cameraInput.click();
@@ -191,12 +187,19 @@ export default function ChatView({
 
   return (
     <div className="flex-1 flex flex-col h-screen md:h-auto bg-background">
-      {/* HEADER */}
-      <div className="bg-background border-b border-border px-3 py-2 md:px-4 md:py-3 flex-shrink-0">
+      {/* HEADER – extra Padding + Safe-Area, damit Timer nicht am Rand klebt */}
+      <div
+        className="bg-background border-b border-border flex-shrink-0"
+        style={{
+          paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
+          paddingRight: "max(0.75rem, env(safe-area-inset-right))",
+          paddingTop: "0.5rem",
+          paddingBottom: "0.5rem",
+        }}
+      >
         <div className="flex items-center justify-between gap-2">
-          {/* Linke Seite: Back + Avatar + Name + Status */}
+          {/* Links: Back + Avatar + Name/Status */}
           <div className="flex items-center gap-3 min-w-0">
-            {/* Mobile Back */}
             <Button
               variant="ghost"
               size="icon"
@@ -206,26 +209,18 @@ export default function ChatView({
               <ArrowLeft className="w-4 h-4" />
             </Button>
 
-            {/* Avatar */}
             <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
               <span className="text-muted-foreground text-sm">👤</span>
             </div>
 
-            {/* Name + Status */}
             <div className="flex flex-col min-w-0">
-              {/* Name in erster Zeile */}
               <div className="flex items-center gap-2 min-w-0">
-                <span className="font-semibold text-foreground truncate max-w-[180px]">
+                <span className="font-semibold text-foreground truncate max-w-[160px]">
                   {selectedChat.otherUser.username}
                 </span>
               </div>
-              {/* zweite Zeile: connected · realTime */}
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span
-                  className={
-                    isConnected ? "text-green-400" : "text-red-400"
-                  }
-                >
+                <span className={isConnected ? "text-green-400" : "text-red-400"}>
                   {isConnected ? t("connected") : t("disconnected")}
                 </span>
                 <span>•</span>
@@ -234,8 +229,8 @@ export default function ChatView({
             </div>
           </div>
 
-          {/* Rechte Seite: Auto-Destruct Dropdown + Menü */}
-          <div className="flex items-center gap-2">
+          {/* Rechts: Timer + Menü, mit kleinem Abstand nach innen */}
+          <div className="flex items-center gap-2 ml-2">
             <div className="flex items-center gap-1 bg-muted/20 rounded-lg px-2 py-1">
               <Clock className="w-3 h-3 text-muted-foreground" />
               <Select value={destructTimer} onValueChange={setDestructTimer}>
@@ -256,7 +251,6 @@ export default function ChatView({
               </Select>
             </div>
 
-            {/* (Optional) Chat-Menü – falls du es nutzt */}
             <Button
               variant="ghost"
               size="icon"
@@ -275,24 +269,21 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* (Falls du das Menü benutzt, lass es hier) */}
+      {/* Optional: Chat-Menü */}
       <div
         id="chat-menu"
         className="hidden absolute right-4 top-16 w-48 bg-background border border-border rounded-lg shadow-lg z-20 py-2"
-      >
-        {/* Hier könntest du Einträge hinzufügen */}
-      </div>
+      />
 
-      {/* MESSAGES AREA */}
+      {/* MESSAGES */}
       <div
         className="flex-1 overflow-y-auto px-3 py-3 space-y-3 pb-20 md:pb-4"
         style={{ WebkitOverflowScrolling: "touch" }}
       >
-        {/* System Hinweis + WebSocket Status */}
         <div className="text-center mb-2">
           <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
             <Shield className="w-4 h-4 text-accent" />
-            <span> {t("endToEndEncrypted") ?? "This conversation is end-to-end encrypted"} </span>
+            <span>{t("endToEndEncrypted") ?? "This conversation is end-to-end encrypted"}</span>
           </div>
           <div
             className={`mt-2 text-xs px-3 py-1 rounded inline-block ${
@@ -301,13 +292,10 @@ export default function ChatView({
                 : "bg-red-100 text-red-800"
             }`}
           >
-            {isConnected
-              ? "✅ WebSocket Connected"
-              : "❌ WebSocket Disconnected"}
+            {isConnected ? "✅ WebSocket Connected" : "❌ WebSocket Disconnected"}
           </div>
         </div>
 
-        {/* Nachrichten */}
         {messages.map((message) => (
           <Message
             key={message.id}
@@ -317,7 +305,7 @@ export default function ChatView({
           />
         ))}
 
-        {/* Tipp-Bubble NUR vom Partner */}
+        {/* Tipp-Bubble nur für Partner */}
         {isPartnerTyping && (
           <div className="flex w-full justify-start animate-fade-in">
             <div className="flex items-end gap-2 max-w-[90%]">
@@ -338,8 +326,16 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* INPUT-BEREICH */}
-      <div className="bg-background border-t border-border px-2 md:px-4 py-2 md:py-3 flex-shrink-0 sticky bottom-0">
+      {/* INPUT – wieder Safe-Area Padding, damit Senden-Button nicht am Rand hängt */}
+      <div
+        className="bg-background border-top border-border flex-shrink-0"
+        style={{
+          paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
+          paddingRight: "max(0.75rem, env(safe-area-inset-right))",
+          paddingTop: "0.5rem",
+          paddingBottom: "0.5rem",
+        }}
+      >
         <div className="flex items-end gap-2 md:gap-3">
           <Button
             variant="ghost"
@@ -386,7 +382,6 @@ export default function ChatView({
           </Button>
         </div>
 
-        {/* Statusleiste unter dem Input */}
         <div className="flex items-center justify-between mt-2 text-xs text-text-muted">
           <div className="flex items-center gap-2">
             <Lock className="w-3 h-3 text-accent" />
