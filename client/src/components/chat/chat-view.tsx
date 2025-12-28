@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -29,13 +29,12 @@ interface ChatViewProps {
   onSendMessage: (
     content: string,
     type: string,
-    destructTimerSec: number,
+    destructTimer: number,
     file?: File
   ) => void;
   isConnected: boolean;
   onBackToList: () => void;
-
-  // 👇 neu für Tipp-System
+  // optional: Tipp-Indikator vom Partner
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -52,82 +51,67 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 min standard
+  const [destructTimer, setDestructTimer] = useState("300"); // 5 min default (Sekunden)
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // für Tipp-Timeout (damit nach ~1.5s "tippt" wieder verschwindet)
+  // Tipp-Status (nur nach außen melden, Anzeige kommt von isPartnerTyping)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isTypingLocalRef = useRef(false);
+  const isTypingSelfRef = useRef(false);
 
-  /* -------------------- Scroll immer nach unten -------------------- */
-  const scrollToBottom = () => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "end",
-      });
-    }
-  };
-
+  // Auto-Scroll ans Ende
   useEffect(() => {
-    scrollToBottom();
-  }, [messages.length, isPartnerTyping, selectedChat?.id]);
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [messages.length]);
 
-  /* -------------------- Senden -------------------- */
   const handleSendMessage = () => {
-    const trimmed = messageInput.trim();
-    if (!trimmed || !selectedChat) return;
+    const text = messageInput.trim();
+    if (!text || !selectedChat) return;
+
     if (!isConnected) {
       alert(t("notConnected"));
       return;
     }
 
-    onSendMessage(trimmed, "text", parseInt(destructTimer, 10) || 300);
+    onSendMessage(text, "text", parseInt(destructTimer, 10));
     setMessageInput("");
 
-    // Tipp-Status aus
-    if (onTyping && isTypingLocalRef.current) {
+    // eigenes Tipp-Signal wieder aus
+    if (onTyping && isTypingSelfRef.current) {
+      isTypingSelfRef.current = false;
       onTyping(false);
-      isTypingLocalRef.current = false;
     }
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
+      return;
     }
-  };
 
-  /* -------------------- Tipp-Status senden -------------------- */
-  const handleChangeInput = (value: string) => {
-    setMessageInput(value);
-
+    // Tipp-Events nur bei Eingabe
     if (!onTyping) return;
 
-    if (!isTypingLocalRef.current) {
-      isTypingLocalRef.current = true;
+    if (!isTypingSelfRef.current) {
+      isTypingSelfRef.current = true;
       onTyping(true);
     }
-
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      if (isTypingLocalRef.current) {
-        isTypingLocalRef.current = false;
+      if (isTypingSelfRef.current) {
+        isTypingSelfRef.current = false;
         onTyping(false);
       }
     }, 1500);
   };
 
-  /* -------------------- Datei / Kamera -------------------- */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !selectedChat) return;
-    if (!isConnected) {
-      alert(t("notConnected"));
+    if (!file) return;
+    if (!selectedChat || !isConnected) {
+      alert(t("selectChatFirst"));
       return;
     }
 
@@ -141,19 +125,17 @@ export default function ChatView({
       const reader = new FileReader();
       reader.onload = () => {
         const base64String = reader.result as string;
-        // ❗ destruktTimer in SEKUNDEN, NICHT *1000
-        onSendMessage(
-          base64String,
-          "image",
-          parseInt(destructTimer, 10) || 300
-        );
+        onSendMessage(base64String, "image", parseInt(destructTimer, 10));
+      };
+      reader.onerror = () => {
+        alert(t("failedToReadFile"));
       };
       reader.readAsDataURL(file);
     } else {
       onSendMessage(
         `📎 ${file.name}`,
         "file",
-        parseInt(destructTimer, 10) || 300,
+        parseInt(destructTimer, 10),
         file
       );
     }
@@ -167,17 +149,19 @@ export default function ChatView({
       return;
     }
 
-    const cam = document.createElement("input");
-    cam.type = "file";
-    cam.accept = "image/*";
-    (cam as any).capture = "environment";
-    cam.onchange = (e) => {
-      const f = (e.target as HTMLInputElement).files?.[0];
-      if (f) {
-        handleFileUpload({ target: { files: [f] } } as any);
+    const cameraInput = document.createElement("input");
+    cameraInput.type = "file";
+    cameraInput.accept = "image/*";
+    cameraInput.capture = "environment";
+    cameraInput.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        handleFileUpload({
+          target: { files: [file] },
+        } as any);
       }
     };
-    cam.click();
+    cameraInput.click();
   };
 
   const formatDestructTimer = (seconds: number) => {
@@ -194,46 +178,49 @@ export default function ChatView({
           <div className="w-16 h-16 bg-primary/20 rounded-full flex items-center justify-center mx-auto">
             <Shield className="w-8 h-8 text-primary" />
           </div>
-          <h3 className="text-lg font-semibold mb-2">{t("welcome")}</h3>
-          <p className="text-muted-foreground">{t("selectChatToStart")}</p>
+          <div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">
+              {t("welcome")}
+            </h3>
+            <p className="text-muted-foreground">{t("selectChatToStart")}</p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-background w-full max-w-full overflow-hidden">
-      {/* Header */}
-      <div className="bg-background border-b border-border px-3 py-3 flex-shrink-0">
+    <div className="flex-1 flex flex-col h-screen md:h-auto bg-background">
+      {/* HEADER */}
+      <div className="bg-background border-b border-border px-3 py-2 md:px-4 md:py-3 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
-          {/* Back (mobile) */}
-          <div className="md:hidden flex items-center mr-1">
+          {/* Linke Seite: Back + Avatar + Name + Status */}
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Mobile Back */}
             <Button
               variant="ghost"
               size="icon"
+              className="md:hidden mr-1 text-muted-foreground hover:text-foreground rounded-full flex-shrink-0"
               onClick={onBackToList}
-              className="w-9 h-9 rounded-full"
             >
               <ArrowLeft className="w-4 h-4" />
             </Button>
-          </div>
 
-          <div className="flex items-center gap-3 min-w-0">
+            {/* Avatar */}
             <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
-              <span className="text-muted-foreground text-xl">👤</span>
+              <span className="text-muted-foreground text-sm">👤</span>
             </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-foreground truncate">
+
+            {/* Name + Status */}
+            <div className="flex flex-col min-w-0">
+              {/* Name in erster Zeile */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-semibold text-foreground truncate max-w-[180px]">
                   {selectedChat.otherUser.username}
-                </h3>
+                </span>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    isConnected ? "bg-green-500" : "bg-red-500"
-                  }`}
-                />
+              {/* zweite Zeile: connected · realTime */}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span
                   className={
                     isConnected ? "text-green-400" : "text-red-400"
@@ -241,24 +228,18 @@ export default function ChatView({
                 >
                   {isConnected ? t("connected") : t("disconnected")}
                 </span>
-                <span className="text-muted-foreground">•</span>
-                <Lock className="w-3 h-3 text-accent" />
-                <span className="text-muted-foreground text-xs">
-                  {t("realTimeChat")}
-                </span>
+                <span>•</span>
+                <span>{t("realTimeChat")}</span>
               </div>
             </div>
           </div>
 
-          {/* Timer + Menü */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 bg-muted/30 rounded-lg px-2 py-1">
+          {/* Rechte Seite: Auto-Destruct Dropdown + Menü */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-muted/20 rounded-lg px-2 py-1">
               <Clock className="w-3 h-3 text-muted-foreground" />
-              <Select
-                value={destructTimer}
-                onValueChange={setDestructTimer}
-              >
-                <SelectTrigger className="border-0 bg-transparent text-xs h-6 px-1 min-w-[56px]">
+              <Select value={destructTimer} onValueChange={setDestructTimer}>
+                <SelectTrigger className="border-0 bg-transparent text-foreground text-xs h-auto p-0 min-w-[56px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -275,71 +256,54 @@ export default function ChatView({
               </Select>
             </div>
 
+            {/* (Optional) Chat-Menü – falls du es nutzt */}
             <Button
               variant="ghost"
               size="icon"
-              className="text-muted-foreground"
+              className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                const el = document.getElementById("chat-menu");
-                if (!el) return;
-                el.style.display =
-                  el.style.display === "block" ? "none" : "block";
+                const menu = document.getElementById("chat-menu");
+                if (menu) {
+                  menu.style.display =
+                    menu.style.display === "block" ? "none" : "block";
+                }
               }}
             >
               <MoreVertical className="w-4 h-4" />
             </Button>
-
-            <div
-              id="chat-menu"
-              className="absolute right-3 top-14 w-48 bg-background border border-border rounded-lg shadow-lg z-20 py-2 hidden"
-            >
-              <button
-                className="w-full px-4 py-2 text-left text-sm hover:bg-muted/50"
-                onClick={() => {
-                  navigator.clipboard.writeText(
-                    t("chatWith", {
-                      username: selectedChat.otherUser.username,
-                    })
-                  );
-                  const el = document.getElementById("chat-menu");
-                  if (el) el.style.display = "none";
-                }}
-              >
-                📋 {t("copyInviteLink")}
-              </button>
-              <button
-                className="w-full px-4 py-2 text-left text-sm hover:bg-muted/50"
-                onClick={() => {
-                  alert(
-                    t("chatStatsText", {
-                      messages: messages.length.toString(),
-                      partner: selectedChat.otherUser.username,
-                    })
-                  );
-                  const el = document.getElementById("chat-menu");
-                  if (el) el.style.display = "none";
-                }}
-              >
-                📊 {t("chatStatistics")}
-              </button>
-            </div>
           </div>
         </div>
       </div>
 
-      {/* Messages Area */}
+      {/* (Falls du das Menü benutzt, lass es hier) */}
       <div
-        className="flex-1 overflow-y-auto px-3 pb-3 pt-3 space-y-3 bg-background"
+        id="chat-menu"
+        className="hidden absolute right-4 top-16 w-48 bg-background border border-border rounded-lg shadow-lg z-20 py-2"
+      >
+        {/* Hier könntest du Einträge hinzufügen */}
+      </div>
+
+      {/* MESSAGES AREA */}
+      <div
+        className="flex-1 overflow-y-auto px-3 py-3 space-y-3 pb-20 md:pb-4"
         style={{ WebkitOverflowScrolling: "touch" }}
       >
-        {/* System Banner */}
+        {/* System Hinweis + WebSocket Status */}
         <div className="text-center mb-2">
-          <div className="inline-flex items-center gap-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
+          <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
             <Shield className="w-4 h-4 text-accent" />
-            <span>{t("endToEndEncrypted")}</span>
+            <span> {t("endToEndEncrypted") ?? "This conversation is end-to-end encrypted"} </span>
           </div>
-          <div className="mt-2 text-xs px-3 py-1 rounded bg-green-100/80 text-green-800 inline-block">
-            ✅ WebSocket Connected
+          <div
+            className={`mt-2 text-xs px-3 py-1 rounded inline-block ${
+              isConnected
+                ? "bg-green-100 text-green-800"
+                : "bg-red-100 text-red-800"
+            }`}
+          >
+            {isConnected
+              ? "✅ WebSocket Connected"
+              : "❌ WebSocket Disconnected"}
           </div>
         </div>
 
@@ -353,17 +317,19 @@ export default function ChatView({
           />
         ))}
 
-        {/* Typing-Indicator NUR für Partner */}
+        {/* Tipp-Bubble NUR vom Partner */}
         {isPartnerTyping && (
-          <div className="flex items-start gap-2">
-            <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
-              <span className="text-muted-foreground text-xs">👤</span>
-            </div>
-            <div className="bg-surface rounded-2xl rounded-tl-md px-3 py-2">
-              <div className="flex gap-1">
-                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce" />
-                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.1s]" />
-                <span className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
+          <div className="flex w-full justify-start animate-fade-in">
+            <div className="flex items-end gap-2 max-w-[90%]">
+              <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-muted-foreground text-xs">👤</span>
+              </div>
+              <div className="bg-surface rounded-2xl rounded-tl-md px-3 py-2">
+                <div className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/80 animate-bounce [animation-delay:-0.2s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/80 animate-bounce [animation-delay:-0.1s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/80 animate-bounce" />
+                </div>
               </div>
             </div>
           </div>
@@ -372,42 +338,40 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input-Leiste */}
-      <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0">
-        <div className="flex items-end gap-2">
+      {/* INPUT-BEREICH */}
+      <div className="bg-background border-t border-border px-2 md:px-4 py-2 md:py-3 flex-shrink-0 sticky bottom-0">
+        <div className="flex items-end gap-2 md:gap-3">
           <Button
             variant="ghost"
-            size="icon"
+            size="sm"
             onClick={() => fileInputRef.current?.click()}
-            className="text-text-muted"
+            className="text-text-muted hover:text-text-primary p-2 md:p-3"
           >
             <Paperclip className="w-4 h-4" />
           </Button>
 
           <Button
             variant="ghost"
-            size="icon"
+            size="sm"
             onClick={handleCameraCapture}
-            className="text-text-muted"
+            className="text-text-muted hover:text-text-primary p-2 md:p-3"
           >
             📷
           </Button>
 
           <div className="flex-1 relative">
             <Textarea
-              placeholder={
-                isConnected ? t("typeMessage") : t("connecting")
-              }
+              placeholder={isConnected ? t("typeMessage") : t("connecting")}
               value={messageInput}
-              onChange={(e) => handleChangeInput(e.target.value)}
+              onChange={(e) => setMessageInput(e.target.value)}
               onKeyDown={handleKeyPress}
               rows={1}
-              className="resize-none bg-background border-border text-foreground placeholder:text-muted-foreground min-h-[40px] max-h-24 rounded-xl border-2 focus:border-primary focus:ring-2 focus:ring-primary/20 text-base"
+              className="resize-none bg-background border-border text-foreground placeholder:text-muted-foreground pr-12 min-h-[44px] md:min-h-[40px] max-h-24 md:max-h-32 text-base leading-5 rounded-xl border-2 focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <Button
               variant="ghost"
-              size="icon"
-              className="absolute right-2 bottom-1.5 text-text-muted hidden md:flex"
+              size="sm"
+              className="absolute right-3 bottom-2 text-text-muted hover:text-primary hidden md:flex"
             >
               <Smile className="w-4 h-4" />
             </Button>
@@ -416,21 +380,22 @@ export default function ChatView({
           <Button
             onClick={handleSendMessage}
             disabled={!messageInput.trim() || !isConnected}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white rounded-full w-11 h-11 flex items-center justify-center shadow-lg"
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:opacity-50 text-white rounded-full p-3 min-w-[48px] min-h-[48px] md:min-w-[40px] md:min-h-[40px] md:p-2 flex items-center justify-center shadow-lg"
           >
-            <Send className="w-4 h-4" />
+            <Send className="w-5 h-5 md:w-4 md:h-4" />
           </Button>
         </div>
 
-        <div className="flex items-center justify-between mt-1 text-xs text-text-muted">
-          <div className="flex items-center gap-1">
+        {/* Statusleiste unter dem Input */}
+        <div className="flex items-center justify-between mt-2 text-xs text-text-muted">
+          <div className="flex items-center gap-2">
             <Lock className="w-3 h-3 text-accent" />
             <span>{t("encryptionEnabled")}</span>
           </div>
           <div className="flex items-center gap-1">
             <span>{t("autoDestruct")}:</span>
             <span className="text-destructive">
-              {formatDestructTimer(parseInt(destructTimer, 10) || 300)}
+              {formatDestructTimer(parseInt(destructTimer, 10))}
             </span>
           </div>
         </div>
