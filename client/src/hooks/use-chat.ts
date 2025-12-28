@@ -8,12 +8,14 @@ import type { Chat, Message, User } from "@shared/schema";
 export function useChat(userId?: number, socket?: any) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
-  const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
   const messageTimers = useRef<Map<number, NodeJS.Timeout>>(new Map());
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  // --------------------------------
+  // Token holen
+  // --------------------------------
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -50,6 +52,9 @@ export function useChat(userId?: number, socket?: any) {
     [getToken]
   );
 
+  // --------------------------------
+  // Selbstlöschende Nachrichten – Timer
+  // --------------------------------
   const scheduleMessageDeletion = useCallback((message: Message) => {
     const timeUntilExpiry =
       new Date(message.expiresAt).getTime() - Date.now();
@@ -59,6 +64,10 @@ export function useChat(userId?: number, socket?: any) {
       return;
     }
 
+    // bestehenden Timer für diese ID aufräumen
+    const existing = messageTimers.current.get(message.id);
+    if (existing) clearTimeout(existing);
+
     const timer = setTimeout(() => {
       setMessages((prev) => prev.filter((m) => m.id !== message.id));
       messageTimers.current.delete(message.id);
@@ -67,7 +76,9 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  // CHATS
+  // --------------------------------
+  // CHATS laden
+  // --------------------------------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -75,7 +86,9 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // MESSAGES (Polling)
+  // --------------------------------
+  // MESSAGES laden
+  // --------------------------------
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
@@ -84,7 +97,9 @@ export function useChat(userId?: number, socket?: any) {
       authedFetch(`/api/chats/${selectedChatId}/messages`),
   });
 
-  // eingehende Messages vom Server entschlüsseln + löschen planen
+  // --------------------------------
+  // HTTP-Nachrichten entschlüsseln + Timer setzen
+  // --------------------------------
   useEffect(() => {
     const processMessages = async () => {
       if (!Array.isArray(chatMessages)) {
@@ -131,15 +146,18 @@ export function useChat(userId?: number, socket?: any) {
     processMessages();
   }, [chatMessages, scheduleMessageDeletion]);
 
-  // WEBSOCKET EVENTS (new_message, user_status, typing)
+  // --------------------------------
+  // WEBSOCKET – nur EIN Listener!
+  // --------------------------------
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewMessage = async (data: any) => {
-      if (data.type !== "new_message" || !data.message) return;
+    // neue Message vom Server
+    const handleNewMessage = async (payload: any) => {
+      const message = payload.message;
+      if (!message) return;
 
-      const message = data.message;
-      let decrypted = { ...message };
+      let decrypted: any = { ...message };
 
       if (message.messageType === "text" && message.isEncrypted) {
         try {
@@ -161,14 +179,17 @@ export function useChat(userId?: number, socket?: any) {
 
       // doppelte IDs vermeiden
       setMessages((prev) => {
-        if (prev.some((m) => m.id === decrypted.id)) return prev;
+        if (decrypted.id != null && prev.some((m) => m.id === decrypted.id)) {
+          return prev;
+        }
         const next = [...prev, decrypted];
-        if (!messageTimers.current.has(decrypted.id)) {
-          scheduleMessageDeletion(decrypted as any);
+        if (decrypted.id != null && !messageTimers.current.has(decrypted.id)) {
+          scheduleMessageDeletion(decrypted);
         }
         return next;
       });
 
+      // Chats + Messages neu laden
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
       if (selectedChatId) {
         queryClient.invalidateQueries({
@@ -183,33 +204,26 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    const handleTyping = (data: any) => {
-      if (data.type !== "typing") return;
-      // Nur aktueller Chat & nur der andere User
-      if (data.chatId !== selectedChatId) return;
-      if (data.senderId === userId) return;
-      setIsPartnerTyping(!!data.isTyping);
+    // ⭐ WICHTIG: NUR DIESE EINE Leitung benutzen
+    const handleSocketMessage = (data: any) => {
+      if (!data) return;
+      if (data.type === "new_message") {
+        handleNewMessage(data);
+      } else if (data.type === "user_status") {
+        handleUserStatus(data);
+      }
     };
 
-    socket.on("new_message", handleNewMessage);
-    socket.on("user_status", handleUserStatus);
-    socket.on("typing", handleTyping);
-
-    socket.on("message", (data: any) => {
-      if (data.type === "new_message") handleNewMessage(data);
-      if (data.type === "user_status") handleUserStatus(data);
-      if (data.type === "typing") handleTyping(data);
-    });
+    socket.on("message", handleSocketMessage);
 
     return () => {
-      socket.off("message");
-      socket.off("new_message", handleNewMessage);
-      socket.off("user_status", handleUserStatus);
-      socket.off("typing", handleTyping);
+      socket.off("message", handleSocketMessage);
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
-  // SENDEN – KEIN optimistisches Duplikat mehr!
+  // --------------------------------
+  // SENDEN – kein optimistisches Duplikat!
+  // --------------------------------
   const sendMessage = useCallback(
     async (
       content: string,
@@ -264,6 +278,7 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
+        // Dateien / Bilder
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
@@ -289,6 +304,7 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
+        // Verschlüsselung
         let finalContent = messageContent;
         let isEncrypted = false;
 
@@ -305,7 +321,7 @@ export function useChat(userId?: number, socket?: any) {
               isEncrypted = true;
             }
           } catch {
-            // bleibt unverschlüsselt
+            // not encrypted
           }
         }
 
@@ -319,6 +335,7 @@ export function useChat(userId?: number, socket?: any) {
           fileName,
           fileSize,
           destructTimer,
+          isEncrypted,
         };
 
         const connected =
@@ -331,7 +348,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // Wichtig: KEIN setMessages hier -> wir warten auf new_message
+        // ❌ KEIN setMessages hier – wir warten auf new_message vom Server
       } catch (err: any) {
         toast({
           title: "Failed to send message",
@@ -343,36 +360,10 @@ export function useChat(userId?: number, socket?: any) {
     [socket, userId, selectedChatId, chats, toast, getToken, queryClient]
   );
 
-  // Tipp-Event an Server schicken
-  const sendTyping = useCallback(
-    (chatId: number, receiverId: number, isTyping: boolean) => {
-      if (!socket || !userId) return;
-
-      const connected =
-        typeof socket.isConnected === "function"
-          ? socket.isConnected()
-          : socket.isConnected;
-
-      if (!connected) return;
-
-      const data = {
-        type: "typing" as const,
-        chatId,
-        senderId: userId,
-        receiverId,
-        isTyping,
-      };
-
-      socket.send(data);
-    },
-    [socket, userId]
-  );
-
   const selectChat = useCallback(
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
       setMessages([]);
-      setIsPartnerTyping(false);
       queryClient.invalidateQueries({ queryKey: ["messages", chat.id] });
     },
     [queryClient]
@@ -382,10 +373,8 @@ export function useChat(userId?: number, socket?: any) {
     chats,
     messages,
     sendMessage,
-    sendTyping,
     selectChat,
     selectedChatId,
-    isPartnerTyping,
     isLoading,
   };
 }
