@@ -35,7 +35,7 @@ interface ChatViewProps {
   isConnected: boolean;
   onBackToList: () => void;
 
-  // 👇 neu: Tipp-Events / Partner-Indikator
+  // Tipp-Funktion
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -50,8 +50,9 @@ export default function ChatView({
   onTyping,
   isPartnerTyping = false,
 }: ChatViewProps) {
+  const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 min (Sekunden)
+  const [destructTimer, setDestructTimer] = useState("300"); // 5m (Sekunden)
 
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -59,11 +60,9 @@ export default function ChatView({
     null
   );
 
-  const { t } = useLanguage();
-
-  // ==========================
-  // Auto-scroll im Container
-  // ==========================
+  // -----------------------------
+  // Auto-scroll → immer nach unten
+  // -----------------------------
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -72,16 +71,14 @@ export default function ChatView({
     });
   }, [messages.length, selectedChat?.id, isPartnerTyping]);
 
-  // ==========================
-  // Tipp-Event senden
-  // ==========================
+  // -----------------------------
+  // Typing auslösen
+  // -----------------------------
   const triggerTyping = () => {
     if (!onTyping || !selectedChat) return;
 
-    // sofort "true" senden
     onTyping(true);
 
-    // Timer resetten → nach 1.5s "false"
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
@@ -101,9 +98,7 @@ export default function ChatView({
     onSendMessage(text, "text", parseInt(destructTimer));
     setMessageInput("");
 
-    if (onTyping) {
-      onTyping(false);
-    }
+    if (onTyping) onTyping(false);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -188,7 +183,9 @@ export default function ChatView({
             <h3 className="text-lg font-semibold text-foreground mb-2">
               {t("welcome")}
             </h3>
-            <p className="text-muted-foreground">{t("selectChatToStart")}</p>
+            <p className="text-muted-foreground">
+              {t("selectChatToStart")}
+            </p>
           </div>
         </div>
       </div>
@@ -280,64 +277,72 @@ export default function ChatView({
                 className="absolute right-0 top-full mt-2 w-48 bg-background border border-border rounded-lg shadow-lg z-10 py-2"
                 style={{ display: "none" }}
               >
-                {/* hier dein Menü-Inhalt, wie vorher */}
+                {/* dein Menü-Inhalt wie vorher */}
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* MESSAGES */}
+      {/* MESSAGES-BEREICH */}
       <div
         ref={messagesContainerRef}
-        className="flex-1 min-h-0 overflow-y-auto p-2 md:p-4 space-y-2 md:space-y-4 custom-scrollbar bg-background"
+        className="flex-1 min-h-0 overflow-y-auto bg-background"
         style={{
           WebkitOverflowScrolling: "touch",
           overscrollBehavior: "contain",
         }}
       >
-        <div className="text-center mb-2">
-          <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
-            <Shield className="w-4 h-4 text-accent" />
-            <span>This conversation is end-to-end encrypted</span>
+        <div className="flex flex-col min-h-full px-2 md:px-4 py-2 md:py-4 space-y-2 md:space-y-4">
+          {/* Banner oben */}
+          <div className="text-center">
+            <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
+              <Shield className="w-4 h-4 text-accent" />
+              <span>This conversation is end-to-end encrypted</span>
+            </div>
+            <div
+              className={`mt-2 text-xs px-3 py-1 rounded ${
+                isConnected
+                  ? "bg-green-100 text-green-800"
+                  : "bg-red-100 text-red-800"
+              }`}
+            >
+              {isConnected
+                ? "✅ WebSocket Connected"
+                : "❌ WebSocket Disconnected"}
+            </div>
           </div>
-          <div
-            className={`mt-2 text-xs px-3 py-1 rounded ${
-              isConnected
-                ? "bg-green-100 text-green-800"
-                : "bg-red-100 text-red-800"
-            }`}
-          >
-            {isConnected
-              ? "✅ WebSocket Connected"
-              : "❌ WebSocket Disconnected"}
+
+          {/* eigentliche Messages nach unten gedrückt */}
+          <div className="mt-auto flex flex-col space-y-2 md:space-y-4">
+            {messages.map((message) => (
+              <Message
+                key={message.id}
+                message={message}
+                isOwn={message.senderId === currentUser.id}
+                otherUser={selectedChat.otherUser}
+              />
+            ))}
+
+            {/* Tipp-Bubble NUR vom Partner */}
+            {isPartnerTyping && (
+              <div className="flex items-start space-x-2">
+                <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-muted-foreground text-xs">
+                    👤
+                  </span>
+                </div>
+                <div className="bg-surface rounded-2xl rounded-tl-md p-3">
+                  <div className="flex space-x-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.1s]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
-
-        {messages.map((message) => (
-          <Message
-            key={message.id}
-            message={message}
-            isOwn={message.senderId === currentUser.id}
-            otherUser={selectedChat.otherUser}
-          />
-        ))}
-
-        {/* Tipp-Bubble NUR vom Partner */}
-        {isPartnerTyping && (
-          <div className="flex items-start space-x-2">
-            <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
-              <span className="text-muted-foreground text-xs">👤</span>
-            </div>
-            <div className="bg-surface rounded-2xl rounded-tl-md p-3">
-              <div className="flex space-x-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.1s]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* INPUT */}
