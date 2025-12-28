@@ -34,6 +34,8 @@ interface ChatViewProps {
   ) => void;
   isConnected: boolean;
   onBackToList: () => void;
+
+  // Typing
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -50,19 +52,26 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5m in Sekunden
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [destructTimer, setDestructTimer] = useState("300"); // 5m (Sekunden)
 
-  // Tipp-Indikator (nur ans Backend senden – Anzeige kommt über isPartnerTyping)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // eigenes Tipp-Flag (damit Punkte NUR beim anderen angezeigt werden)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingSelfRef = useRef(false);
 
-  // Immer ans Ende scrollen, wenn Nachrichten kommen
+  // immer nach unten scrollen, wenn Messages wechseln
   useEffect(() => {
     if (!messagesEndRef.current) return;
     messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages.length]);
+
+  // beim Chat-Wechsel auch nach unten
+  useEffect(() => {
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [selectedChat?.id]);
 
   const handleSendMessage = () => {
     const text = messageInput.trim();
@@ -83,21 +92,24 @@ export default function ChatView({
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter ohne Shift -> senden
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
       return;
     }
 
+    // Tipp-Indikator an Partner schicken
     if (!onTyping) return;
 
     if (!isTypingSelfRef.current) {
       isTypingSelfRef.current = true;
       onTyping(true);
     }
+
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      if (isTypingSelfRefRef.current) {
+      if (isTypingSelfRef.current && onTyping) {
         isTypingSelfRef.current = false;
         onTyping(false);
       }
@@ -113,7 +125,7 @@ export default function ChatView({
       return;
     }
 
-    const maxSize = 10 * 1024 * 1024;
+    const maxSize = 10 * 1024 * 1024; // 10 MB
     if (file.size > maxSize) {
       alert(t("fileTooLarge"));
       return;
@@ -122,8 +134,8 @@ export default function ChatView({
     if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = () => {
-        const base64String = reader.result as string;
-        onSendMessage(base64String, "image", parseInt(destructTimer, 10));
+        const base64 = reader.result as string;
+        onSendMessage(base64, "image", parseInt(destructTimer, 10));
       };
       reader.onerror = () => {
         alert(t("failedToReadFile"));
@@ -147,17 +159,17 @@ export default function ChatView({
       return;
     }
 
-    const cameraInput = document.createElement("input");
-    cameraInput.type = "file";
-    cameraInput.accept = "image/*";
-    cameraInput.capture = "environment";
-    cameraInput.onchange = (e) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.capture = "environment";
+    input.onchange = (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (file) {
         handleFileUpload({ target: { files: [file] } } as any);
       }
     };
-    cameraInput.click();
+    input.click();
   };
 
   const formatDestructTimer = (seconds: number) => {
@@ -175,9 +187,7 @@ export default function ChatView({
             <Shield className="w-8 h-8 text-primary" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-foreground mb-2">
-              {t("welcome")}
-            </h3>
+            <h3 className="text-lg font-semibold mb-2">{t("welcome")}</h3>
             <p className="text-muted-foreground">{t("selectChatToStart")}</p>
           </div>
         </div>
@@ -187,18 +197,10 @@ export default function ChatView({
 
   return (
     <div className="flex-1 flex flex-col h-screen md:h-auto bg-background">
-      {/* HEADER – extra Padding + Safe-Area, damit Timer nicht am Rand klebt */}
-      <div
-        className="bg-background border-b border-border flex-shrink-0"
-        style={{
-          paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
-          paddingRight: "max(0.75rem, env(safe-area-inset-right))",
-          paddingTop: "0.5rem",
-          paddingBottom: "0.5rem",
-        }}
-      >
+      {/* HEADER – schlicht, aber sauber eingerückt */}
+      <div className="bg-background border-b border-border p-3 md:p-4 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
-          {/* Links: Back + Avatar + Name/Status */}
+          {/* Links: Back + Avatar + Name */}
           <div className="flex items-center gap-3 min-w-0">
             <Button
               variant="ghost"
@@ -229,8 +231,8 @@ export default function ChatView({
             </div>
           </div>
 
-          {/* Rechts: Timer + Menü, mit kleinem Abstand nach innen */}
-          <div className="flex items-center gap-2 ml-2">
+          {/* Rechts: Timer + Menü */}
+          <div className="flex items-center gap-2 flex-shrink-0">
             <div className="flex items-center gap-1 bg-muted/20 rounded-lg px-2 py-1">
               <Clock className="w-3 h-3 text-muted-foreground" />
               <Select value={destructTimer} onValueChange={setDestructTimer}>
@@ -269,21 +271,22 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* Optional: Chat-Menü */}
+      {/* Dropdown (falls du es nutzen willst – momentan leer) */}
       <div
         id="chat-menu"
         className="hidden absolute right-4 top-16 w-48 bg-background border border-border rounded-lg shadow-lg z-20 py-2"
       />
 
       {/* MESSAGES */}
-      <div
-        className="flex-1 overflow-y-auto px-3 py-3 space-y-3 pb-20 md:pb-4"
-        style={{ WebkitOverflowScrolling: "touch" }}
-      >
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 pb-24 md:pb-4">
+        {/* System-Hinweis */}
         <div className="text-center mb-2">
           <div className="inline-flex items-center space-x-2 bg-surface rounded-full px-4 py-2 text-sm text-text-muted">
             <Shield className="w-4 h-4 text-accent" />
-            <span>{t("endToEndEncrypted") ?? "This conversation is end-to-end encrypted"}</span>
+            <span>
+              {t("endToEndEncrypted") ??
+                "This conversation is end-to-end encrypted"}
+            </span>
           </div>
           <div
             className={`mt-2 text-xs px-3 py-1 rounded inline-block ${
@@ -292,10 +295,13 @@ export default function ChatView({
                 : "bg-red-100 text-red-800"
             }`}
           >
-            {isConnected ? "✅ WebSocket Connected" : "❌ WebSocket Disconnected"}
+            {isConnected
+              ? "✅ WebSocket Connected"
+              : "❌ WebSocket Disconnected"}
           </div>
         </div>
 
+        {/* Nachrichten */}
         {messages.map((message) => (
           <Message
             key={message.id}
@@ -305,7 +311,7 @@ export default function ChatView({
           />
         ))}
 
-        {/* Tipp-Bubble nur für Partner */}
+        {/* Tipp-Indikator NUR für Partner */}
         {isPartnerTyping && (
           <div className="flex w-full justify-start animate-fade-in">
             <div className="flex items-end gap-2 max-w-[90%]">
@@ -326,17 +332,9 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* INPUT – wieder Safe-Area Padding, damit Senden-Button nicht am Rand hängt */}
-      <div
-        className="bg-background border-top border-border flex-shrink-0"
-        style={{
-          paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
-          paddingRight: "max(0.75rem, env(safe-area-inset-right))",
-          paddingTop: "0.5rem",
-          paddingBottom: "0.5rem",
-        }}
-      >
-        <div className="flex items-end gap-2 md:gap-3">
+      {/* INPUT – Button sauber sichtbar, nichts seitlich abgeschnitten */}
+      <div className="bg-background border-t border-border p-2 md:p-4 flex-shrink-0">
+        <div className="flex items-end space-x-2 md:space-x-3">
           <Button
             variant="ghost"
             size="sm"
