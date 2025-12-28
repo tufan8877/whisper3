@@ -8,6 +8,7 @@ import type { Chat, Message, User } from "@shared/schema";
 export function useChat(userId?: number, socket?: any) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
+  const [isPartnerTyping, setIsPartnerTyping] = useState(false);
 
   const messageTimers = useRef<Map<number, NodeJS.Timeout>>(new Map());
   const queryClient = useQueryClient();
@@ -74,7 +75,7 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // MESSAGES
+  // MESSAGES (Polling)
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
@@ -130,7 +131,7 @@ export function useChat(userId?: number, socket?: any) {
     processMessages();
   }, [chatMessages, scheduleMessageDeletion]);
 
-  // WEBSOCKET EVENTS
+  // WEBSOCKET EVENTS (new_message, user_status, typing)
   useEffect(() => {
     if (!socket) return;
 
@@ -182,18 +183,29 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
+    const handleTyping = (data: any) => {
+      if (data.type !== "typing") return;
+      // Nur aktueller Chat & nur der andere User
+      if (data.chatId !== selectedChatId) return;
+      if (data.senderId === userId) return;
+      setIsPartnerTyping(!!data.isTyping);
+    };
+
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
+    socket.on("typing", handleTyping);
 
     socket.on("message", (data: any) => {
       if (data.type === "new_message") handleNewMessage(data);
       if (data.type === "user_status") handleUserStatus(data);
+      if (data.type === "typing") handleTyping(data);
     });
 
     return () => {
       socket.off("message");
       socket.off("new_message", handleNewMessage);
       socket.off("user_status", handleUserStatus);
+      socket.off("typing", handleTyping);
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
@@ -293,7 +305,7 @@ export function useChat(userId?: number, socket?: any) {
               isEncrypted = true;
             }
           } catch {
-            // not encrypted -> plain
+            // bleibt unverschlüsselt
           }
         }
 
@@ -319,7 +331,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // WICHTIG: KEIN setMessages hier -> wir warten auf new_message vom Server
+        // Wichtig: KEIN setMessages hier -> wir warten auf new_message
       } catch (err: any) {
         toast({
           title: "Failed to send message",
@@ -331,10 +343,36 @@ export function useChat(userId?: number, socket?: any) {
     [socket, userId, selectedChatId, chats, toast, getToken, queryClient]
   );
 
+  // Tipp-Event an Server schicken
+  const sendTyping = useCallback(
+    (chatId: number, receiverId: number, isTyping: boolean) => {
+      if (!socket || !userId) return;
+
+      const connected =
+        typeof socket.isConnected === "function"
+          ? socket.isConnected()
+          : socket.isConnected;
+
+      if (!connected) return;
+
+      const data = {
+        type: "typing" as const,
+        chatId,
+        senderId: userId,
+        receiverId,
+        isTyping,
+      };
+
+      socket.send(data);
+    },
+    [socket, userId]
+  );
+
   const selectChat = useCallback(
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
       setMessages([]);
+      setIsPartnerTyping(false);
       queryClient.invalidateQueries({ queryKey: ["messages", chat.id] });
     },
     [queryClient]
@@ -344,8 +382,10 @@ export function useChat(userId?: number, socket?: any) {
     chats,
     messages,
     sendMessage,
+    sendTyping,
     selectChat,
     selectedChatId,
+    isPartnerTyping,
     isLoading,
   };
 }
