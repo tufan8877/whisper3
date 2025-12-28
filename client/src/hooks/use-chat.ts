@@ -13,9 +13,7 @@ export function useChat(userId?: number, socket?: any) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // --------------------------------
-  // Token holen
-  // --------------------------------
+  // --- Token Helper ---------------------------------------------------------
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -52,9 +50,7 @@ export function useChat(userId?: number, socket?: any) {
     [getToken]
   );
 
-  // --------------------------------
-  // Selbstlöschende Nachrichten – Timer
-  // --------------------------------
+  // --- Auto-Delete ----------------------------------------------------------
   const scheduleMessageDeletion = useCallback((message: Message) => {
     const timeUntilExpiry =
       new Date(message.expiresAt).getTime() - Date.now();
@@ -64,10 +60,6 @@ export function useChat(userId?: number, socket?: any) {
       return;
     }
 
-    // bestehenden Timer für diese ID aufräumen
-    const existing = messageTimers.current.get(message.id);
-    if (existing) clearTimeout(existing);
-
     const timer = setTimeout(() => {
       setMessages((prev) => prev.filter((m) => m.id !== message.id));
       messageTimers.current.delete(message.id);
@@ -76,9 +68,7 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  // --------------------------------
-  // CHATS laden
-  // --------------------------------
+  // --- CHATS ----------------------------------------------------------------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -86,9 +76,7 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // --------------------------------
-  // MESSAGES laden
-  // --------------------------------
+  // --- MESSAGES -------------------------------------------------------------
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
@@ -97,9 +85,7 @@ export function useChat(userId?: number, socket?: any) {
       authedFetch(`/api/chats/${selectedChatId}/messages`),
   });
 
-  // --------------------------------
-  // HTTP-Nachrichten entschlüsseln + Timer setzen
-  // --------------------------------
+  // eingehende Messages vom Server (Query) entschlüsseln + Löschung planen
   useEffect(() => {
     const processMessages = async () => {
       if (!Array.isArray(chatMessages)) {
@@ -134,9 +120,16 @@ export function useChat(userId?: number, socket?: any) {
         })
       );
 
-      setMessages(processed);
-
+      // kleine Sicherheits-Dedupe auch hier
+      const uniqueById = new Map<number, Message>();
       processed.forEach((m: any) => {
+        if (!uniqueById.has(m.id)) uniqueById.set(m.id, m);
+      });
+
+      const finalMessages = Array.from(uniqueById.values());
+      setMessages(finalMessages);
+
+      finalMessages.forEach((m) => {
         if (!messageTimers.current.has(m.id)) {
           scheduleMessageDeletion(m);
         }
@@ -146,16 +139,13 @@ export function useChat(userId?: number, socket?: any) {
     processMessages();
   }, [chatMessages, scheduleMessageDeletion]);
 
-  // --------------------------------
-  // WEBSOCKET – nur EIN Listener!
-  // --------------------------------
+  // --- WEBSOCKET EVENTS -----------------------------------------------------
   useEffect(() => {
     if (!socket) return;
 
-    // neue Message vom Server
-    const handleNewMessage = async (payload: any) => {
-      const message = payload.message;
-      if (!message) return;
+    const handleNewMessage = async (data: any) => {
+      if (!data || !data.message) return;
+      const message = data.message;
 
       let decrypted: any = { ...message };
 
@@ -177,19 +167,29 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      // doppelte IDs vermeiden
       setMessages((prev) => {
-        if (decrypted.id != null && prev.some((m) => m.id === decrypted.id)) {
-          return prev;
-        }
+        // 🚫 Dedupe: gleiche ID ODER gleiche Signatur
+        const alreadyThere = prev.some((m) =>
+          m.id === decrypted.id ||
+          (
+            m.senderId === decrypted.senderId &&
+            new Date(m.createdAt).getTime() ===
+              new Date(decrypted.createdAt).getTime() &&
+            m.content === decrypted.content
+          )
+        );
+
+        if (alreadyThere) return prev;
+
         const next = [...prev, decrypted];
-        if (decrypted.id != null && !messageTimers.current.has(decrypted.id)) {
-          scheduleMessageDeletion(decrypted);
+
+        if (!messageTimers.current.has(decrypted.id)) {
+          scheduleMessageDeletion(decrypted as Message);
         }
         return next;
       });
 
-      // Chats + Messages neu laden
+      // Chats / Messages aktualisieren
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
       if (selectedChatId) {
         queryClient.invalidateQueries({
@@ -204,26 +204,24 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    // ⭐ WICHTIG: NUR DIESE EINE Leitung benutzen
-    const handleSocketMessage = (data: any) => {
-      if (!data) return;
-      if (data.type === "new_message") {
-        handleNewMessage(data);
-      } else if (data.type === "user_status") {
-        handleUserStatus(data);
-      }
+    // ❗ Nur EIN Listener – der Server schickt alles über "message"
+    const genericHandler = (data: any) => {
+      if (!data || !data.type) return;
+      if (data.type === "new_message") handleNewMessage(data);
+      if (data.type === "user_status") handleUserStatus(data);
     };
 
-    socket.on("message", handleSocketMessage);
+    socket.on("message", genericHandler);
+
+    // alte direkten Listener NICHT mehr nutzen
+    // socket.on("new_message", handleNewMessage);
 
     return () => {
-      socket.off("message", handleSocketMessage);
+      socket.off("message", genericHandler);
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
-  // --------------------------------
-  // SENDEN – kein optimistisches Duplikat!
-  // --------------------------------
+  // --- SENDEN ---------------------------------------------------------------
   const sendMessage = useCallback(
     async (
       content: string,
@@ -278,7 +276,6 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
-        // Dateien / Bilder
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
@@ -304,7 +301,6 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
-        // Verschlüsselung
         let finalContent = messageContent;
         let isEncrypted = false;
 
@@ -321,7 +317,7 @@ export function useChat(userId?: number, socket?: any) {
               isEncrypted = true;
             }
           } catch {
-            // not encrypted
+            // not encrypted -> plain
           }
         }
 
@@ -348,7 +344,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // ❌ KEIN setMessages hier – wir warten auf new_message vom Server
+        // ❗ KEIN setMessages hier -> wir warten auf "new_message" vom Server
       } catch (err: any) {
         toast({
           title: "Failed to send message",
