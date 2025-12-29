@@ -73,7 +73,7 @@ export function useChat(userId?: number, socket?: any) {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // CHATS LADEN
+  // CHATS (React-Query bleibt)
   // ---------------------------------------------------------------------------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
@@ -83,65 +83,74 @@ export function useChat(userId?: number, socket?: any) {
   });
 
   // ---------------------------------------------------------------------------
-  // NACHRICHTEN LADEN
+  // MESSAGES – KEIN REACT-QUERY MEHR
   // ---------------------------------------------------------------------------
-  const { data: chatMessages = [] } = useQuery({
-    queryKey: ["messages", selectedChatId],
-    enabled: !!selectedChatId,
-    refetchInterval: 3000,
-    queryFn: async () =>
-      authedFetch(`/api/chats/${selectedChatId}/messages`),
-  });
+  const loadMessagesForChat = useCallback(
+    async (chatId: number) => {
+      try {
+        const data = await authedFetch(`/api/chats/${chatId}/messages`);
 
-  // eingehende Messages vom Server entschlüsseln + Löschtimer setzen
-  useEffect(() => {
-    const processMessages = async () => {
-      if (!Array.isArray(chatMessages)) {
-        setMessages([]);
-        return;
-      }
-
-      const processed = await Promise.all(
-        chatMessages.map(async (message: any) => {
-          if (message.messageType === "text" && message.isEncrypted) {
-            try {
-              const raw = localStorage.getItem("user");
-              if (raw) {
-                const u = JSON.parse(raw);
-                if (u.privateKey) {
-                  const decrypted = await decryptMessage(
-                    message.content,
-                    u.privateKey
-                  );
-                  return { ...message, content: decrypted };
-                }
-              }
-            } catch {
-              return {
-                ...message,
-                content:
-                  "[Decryption failed - Invalid key or corrupted data]",
-              };
-            }
-          }
-          return message;
-        })
-      );
-
-      setMessages(processed);
-
-      processed.forEach((m: any) => {
-        if (!messageTimers.current.has(m.id)) {
-          scheduleMessageDeletion(m);
+        if (!Array.isArray(data)) {
+          setMessages([]);
+          return;
         }
-      });
-    };
 
-    processMessages();
-  }, [chatMessages, scheduleMessageDeletion]);
+        // entschlüsseln
+        const processed: Message[] = await Promise.all(
+          data.map(async (message: any) => {
+            if (message.messageType === "text" && message.isEncrypted) {
+              try {
+                const raw = localStorage.getItem("user");
+                if (raw) {
+                  const u = JSON.parse(raw);
+                  if (u.privateKey) {
+                    const decrypted = await decryptMessage(
+                      message.content,
+                      u.privateKey
+                    );
+                    return { ...message, content: decrypted };
+                  }
+                }
+              } catch {
+                return {
+                  ...message,
+                  content:
+                    "[Decryption failed - Invalid key or corrupted data]",
+                };
+              }
+            }
+            return message;
+          })
+        );
+
+        setMessages(processed);
+
+        // Timer setzen
+        processed.forEach((m) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
+          }
+        });
+      } catch (err) {
+        console.error("Failed to load messages:", err);
+        setMessages([]);
+      }
+    },
+    [authedFetch, scheduleMessageDeletion]
+  );
+
+  // Wenn Chat gewechselt wird → Messages einmal laden
+  useEffect(() => {
+    if (selectedChatId) {
+      setMessages([]); // sauber leeren
+      loadMessagesForChat(selectedChatId);
+    } else {
+      setMessages([]);
+    }
+  }, [selectedChatId, loadMessagesForChat]);
 
   // ---------------------------------------------------------------------------
-  // WEBSOCKET EVENTS (nur EIN Listener-Typ!)
+  // WEBSOCKET EVENTS (nur new_message & user_status)
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!socket) return;
@@ -151,6 +160,14 @@ export function useChat(userId?: number, socket?: any) {
       if (data.type !== "new_message" || !data.message) return;
 
       const message = data.message;
+
+      // nur für aktuell offenen Chat anzeigen
+      if (selectedChatId && message.chatId !== selectedChatId) {
+        // aber Chats-Liste updaten
+        queryClient.invalidateQueries({ queryKey: ["chats", userId] });
+        return;
+      }
+
       let decrypted = { ...message };
 
       if (message.messageType === "text" && message.isEncrypted) {
@@ -171,7 +188,7 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      // ❗ hier doppelte IDs verhindern
+      // doppelte IDs verhindern
       setMessages((prev) => {
         if (prev.some((m) => m.id === decrypted.id)) return prev;
         const next = [...prev, decrypted];
@@ -181,12 +198,8 @@ export function useChat(userId?: number, socket?: any) {
         return next;
       });
 
+      // Chatsliste für Preview / Zeitstempel aktualisieren
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
-      if (selectedChatId) {
-        queryClient.invalidateQueries({
-          queryKey: ["messages", selectedChatId],
-        });
-      }
     };
 
     const handleUserStatus = (data: any) => {
@@ -195,11 +208,10 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    // ✅ NUR NOCH EIN TYP VON LISTENER
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
-    // ❌ KEIN socket.on("message", ...) MEHR – das hat alles doppelt gemacht!
+    // WICHTIG: kein socket.on("message", ...) hier!
 
     return () => {
       socket.off("new_message", handleNewMessage);
@@ -208,7 +220,7 @@ export function useChat(userId?: number, socket?: any) {
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
   // ---------------------------------------------------------------------------
-  // SENDEN – KEIN OPTIMISTISCHES setMessages!
+  // SENDEN – nur übers Socket, kein optimistisches setMessages
   // ---------------------------------------------------------------------------
   const sendMessage = useCallback(
     async (
@@ -331,8 +343,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // ❗WICHTIG: kein setMessages hier,
-        // wir warten ausschließlich auf "new_message" vom Server
+        // KEIN setMessages – wir warten nur auf "new_message"
       } catch (err: any) {
         toast({
           title: "Failed to send message",
@@ -350,10 +361,8 @@ export function useChat(userId?: number, socket?: any) {
   const selectChat = useCallback(
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
-      setMessages([]);
-      queryClient.invalidateQueries({ queryKey: ["messages", chat.id] });
     },
-    [queryClient]
+    []
   );
 
   return {
