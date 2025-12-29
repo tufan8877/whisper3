@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { LanguageSelector } from "@/components/ui/language-selector";
 import { useLanguage } from "@/lib/i18n";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { X, KeyRound, Trash2 } from "lucide-react";
 
 interface SettingsModalProps {
@@ -18,22 +19,6 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
   const { toast } = useToast();
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // 🔐 Token sauber aus localStorage holen (token oder accessToken)
-  const getToken = (): string | null => {
-    try {
-      const userRaw = localStorage.getItem("user");
-      if (userRaw) {
-        const u = JSON.parse(userRaw);
-        if (u?.token) return u.token;
-        if (u?.accessToken) return u.accessToken;
-      }
-      const plainToken = localStorage.getItem("token");
-      return plainToken || null;
-    } catch {
-      return null;
-    }
-  };
-
   const handleDeleteAccount = async () => {
     const confirmed = window.confirm(
       t("deleteAccountConfirm") ||
@@ -41,36 +26,28 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
     );
     if (!confirmed) return;
 
-    const token = getToken();
-    if (!token) {
-      toast({
-        title: t("error"),
-        description: "Missing auth token – bitte neu einloggen.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     try {
       setIsDeleting(true);
 
-      const res = await fetch(`/api/users/${currentUser.id}/hard-delete`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      // 🔐 WICHTIG: apiRequest benutzt die gleiche Logik wie im restlichen Projekt
+      const res = await apiRequest(
+        "DELETE",
+        `/api/users/${currentUser.id}/hard-delete`
+      );
 
       if (!res.ok) {
         let msg = "Failed to delete account";
         try {
           const body = await res.json();
           if (body?.message) msg = body.message;
-        } catch {}
+        } catch {
+          // ignore JSON error
+        }
+        console.error("Delete account failed:", msg);
         throw new Error(msg);
       }
 
-      // 🧹 lokale Daten löschen
+      // 🧹 Lokale Daten löschen
       localStorage.removeItem("user");
       localStorage.removeItem("token");
 
@@ -79,13 +56,13 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
         description: t("accountDeleted"),
       });
 
-      // zurück zur Startseite
+      // Zurück zur Startseite
       window.location.href = "/";
-    } catch (err) {
+    } catch (err: any) {
       console.error("Delete account error:", err);
       toast({
         title: t("error"),
-        description: t("accountDeleteError"),
+        description: err?.message || t("accountDeleteError"),
         variant: "destructive",
       });
       setIsDeleting(false);
