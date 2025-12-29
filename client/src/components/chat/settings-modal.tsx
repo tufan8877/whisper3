@@ -29,7 +29,6 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
     try {
       setIsDeleting(true);
 
-      // 🔐 WICHTIG: apiRequest benutzt die gleiche Logik wie im restlichen Projekt
       const res = await apiRequest(
         "DELETE",
         `/api/users/${currentUser.id}/hard-delete`
@@ -40,14 +39,10 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
         try {
           const body = await res.json();
           if (body?.message) msg = body.message;
-        } catch {
-          // ignore JSON error
-        }
-        console.error("Delete account failed:", msg);
+        } catch {}
         throw new Error(msg);
       }
 
-      // 🧹 Lokale Daten löschen
       localStorage.removeItem("user");
       localStorage.removeItem("token");
 
@@ -56,7 +51,6 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
         description: t("accountDeleted"),
       });
 
-      // Zurück zur Startseite
       window.location.href = "/";
     } catch (err: any) {
       console.error("Delete account error:", err);
