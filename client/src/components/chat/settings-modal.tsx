@@ -18,6 +18,22 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
   const { toast } = useToast();
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // 🔐 Token sauber aus localStorage holen (token oder accessToken)
+  const getToken = (): string | null => {
+    try {
+      const userRaw = localStorage.getItem("user");
+      if (userRaw) {
+        const u = JSON.parse(userRaw);
+        if (u?.token) return u.token;
+        if (u?.accessToken) return u.accessToken;
+      }
+      const plainToken = localStorage.getItem("token");
+      return plainToken || null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleDeleteAccount = async () => {
     const confirmed = window.confirm(
       t("deleteAccountConfirm") ||
@@ -25,18 +41,36 @@ export default function SettingsModal({ currentUser, onClose }: SettingsModalPro
     );
     if (!confirmed) return;
 
+    const token = getToken();
+    if (!token) {
+      toast({
+        title: t("error"),
+        description: "Missing auth token – bitte neu einloggen.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       setIsDeleting(true);
 
       const res = await fetch(`/api/users/${currentUser.id}/hard-delete`, {
         method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       });
 
       if (!res.ok) {
-        throw new Error("Failed to delete account");
+        let msg = "Failed to delete account";
+        try {
+          const body = await res.json();
+          if (body?.message) msg = body.message;
+        } catch {}
+        throw new Error(msg);
       }
 
-      // lokale Daten löschen
+      // 🧹 lokale Daten löschen
       localStorage.removeItem("user");
       localStorage.removeItem("token");
 
