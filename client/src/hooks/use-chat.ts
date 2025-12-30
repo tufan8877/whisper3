@@ -1,3 +1,4 @@
+// client/src/hooks/useChat.ts
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -13,6 +14,9 @@ export function useChat(userId?: number, socket?: any) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  /* --------------------------------------------------
+   * Helpers
+   * -------------------------------------------------- */
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -54,7 +58,6 @@ export function useChat(userId?: number, socket?: any) {
 
     const timeUntilExpiry =
       new Date(message.expiresAt).getTime() - Date.now();
-
     if (!Number.isFinite(timeUntilExpiry)) return;
 
     if (timeUntilExpiry <= 0) {
@@ -70,53 +73,42 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  // aggressive Dedupe: nach ID + "fast gleiche" Nachricht
-  const mergeMessages = useCallback(
-    (existing: Message[], incoming: Message[]): Message[] => {
-      const result: Message[] = [...existing];
+  const addMessagesDedup = useCallback(
+    (incoming: Message | Message[]) => {
+      const list = Array.isArray(incoming) ? incoming : [incoming];
 
-      for (const msg of incoming) {
-        let isDuplicate = false;
+      setMessages((prev) => {
+        const existingIds = new Set(
+          prev.filter((m) => m.id != null).map((m) => m.id as number)
+        );
 
-        // 1) gleiche ID schon vorhanden
-        if (msg.id != null && existing.some((m) => m.id === msg.id)) {
-          continue;
+        const merged = [...prev];
+        for (const msg of list) {
+          if (msg.id != null && existingIds.has(msg.id)) continue;
+          merged.push(msg);
         }
 
-        // 2) selbe Chat-Kombi, Inhalt & ~gleiche Zeit (± 2 Sekunden)
-        for (const m of existing) {
-          if (
-            m.chatId === msg.chatId &&
-            m.senderId === msg.senderId &&
-            m.receiverId === msg.receiverId &&
-            (m.content || "") === (msg.content || "")
-          ) {
-            const t1 = new Date(m.createdAt).getTime();
-            const t2 = new Date(msg.createdAt).getTime();
-            if (Math.abs(t1 - t2) < 2000) {
-              isDuplicate = true;
-              break;
-            }
+        merged.sort(
+          (a, b) =>
+            new Date(a.createdAt).getTime() -
+            new Date(b.createdAt).getTime()
+        );
+
+        merged.forEach((m) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
           }
-        }
+        });
 
-        if (!isDuplicate) {
-          result.push(msg);
-        }
-      }
-
-      // nach createdAt sortieren
-      result.sort(
-        (a, b) =>
-          new Date(a.createdAt).getTime() -
-          new Date(b.createdAt).getTime()
-      );
-      return result;
+        return merged;
+      });
     },
-    []
+    [scheduleMessageDeletion]
   );
 
-  // CHATS
+  /* --------------------------------------------------
+   * CHATS LIST (React Query wie gehabt)
+   * -------------------------------------------------- */
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -124,65 +116,60 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // MESSAGES – leichtes Polling für Sync, aber dedupe!
-  const { data: chatMessages = [] } = useQuery({
-    queryKey: ["messages", selectedChatId],
-    enabled: !!selectedChatId,
-    refetchInterval: 5000,
-    queryFn: async () =>
-      authedFetch(`/api/chats/${selectedChatId}/messages`),
-  });
+  /* --------------------------------------------------
+   * Nachrichten für einen Chat EINMAL laden
+   * -------------------------------------------------- */
+  const loadMessages = useCallback(
+    async (chatId: number) => {
+      try {
+        const rawMessages: any[] = await authedFetch(
+          `/api/chats/${chatId}/messages`
+        );
 
-  // HTTP-Messages verarbeiten (Decrypt + Dedupe)
-  useEffect(() => {
-    const processMessages = async () => {
-      if (!Array.isArray(chatMessages)) {
-        setMessages([]);
-        return;
-      }
-
-      const processed = await Promise.all(
-        chatMessages.map(async (message: any) => {
-          if (message.messageType === "text" && message.isEncrypted) {
-            try {
-              const raw = localStorage.getItem("user");
-              if (raw) {
-                const u = JSON.parse(raw);
-                if (u.privateKey) {
-                  const decrypted = await decryptMessage(
-                    message.content,
-                    u.privateKey
-                  );
-                  return { ...message, content: decrypted };
+        const processed = await Promise.all(
+          rawMessages.map(async (message: any) => {
+            if (message.messageType === "text" && message.isEncrypted) {
+              try {
+                const rawUser = localStorage.getItem("user");
+                if (rawUser) {
+                  const u = JSON.parse(rawUser);
+                  if (u.privateKey) {
+                    const decrypted = await decryptMessage(
+                      message.content,
+                      u.privateKey
+                    );
+                    return { ...message, content: decrypted };
+                  }
                 }
+              } catch {
+                return {
+                  ...message,
+                  content:
+                    "[Decryption failed - Invalid key or corrupted data]",
+                };
               }
-            } catch {
-              return {
-                ...message,
-                content:
-                  "[Decryption failed - Invalid key or corrupted data]",
-              };
             }
-          }
-          return message;
-        })
-      );
+            return message;
+          })
+        );
 
-      setMessages((prev) => {
-        const merged = mergeMessages(prev, processed as any);
-        merged.forEach((m) => {
-          if (!messageTimers.current.has(m.id)) {
-            scheduleMessageDeletion(m);
-          }
-        });
-        return merged;
-      });
-    };
+        setMessages([]);
+        addMessagesDedup(processed as any);
+      } catch (err) {
+        console.error("loadMessages error:", err);
+      }
+    },
+    [authedFetch, addMessagesDedup]
+  );
 
-    processMessages();
-  }, [chatMessages, mergeMessages, scheduleMessageDeletion]);
+  useEffect(() => {
+    if (!selectedChatId) return;
+    loadMessages(selectedChatId);
+  }, [selectedChatId, loadMessages]);
 
-  // WEBSOCKET EVENTS
+  /* --------------------------------------------------
+   * WEBSOCKET EVENTS – EINZIGE Quelle für neue Nachrichten
+   * -------------------------------------------------- */
   useEffect(() => {
     if (!socket || !userId) return;
 
@@ -191,19 +178,13 @@ export function useChat(userId?: number, socket?: any) {
 
       const message = data.message as Message;
 
-      // 🔥 WICHTIG: eigene Nachrichten vom WebSocket IGNORIEREN,
-      // die kommen ohnehin über HTTP-Polling rein -> sonst Doppel-Effekt
-      if (message.senderId === userId) {
-        return;
-      }
-
       let decrypted: any = { ...message };
 
       if (message.messageType === "text" && message.isEncrypted) {
         try {
-          const raw = localStorage.getItem("user");
-          if (raw) {
-            const u = JSON.parse(raw);
+          const rawUser = localStorage.getItem("user");
+          if (rawUser) {
+            const u = JSON.parse(rawUser);
             if (u.privateKey) {
               decrypted.content = await decryptMessage(
                 message.content,
@@ -217,23 +198,13 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      setMessages((prev) => {
-        const merged = mergeMessages(prev, [decrypted]);
-        merged.forEach((m) => {
-          if (!messageTimers.current.has(m.id)) {
-            scheduleMessageDeletion(m);
-          }
-        });
-        return merged;
-      });
-
-      // Chat-Liste / Badges refreshed
-      queryClient.invalidateQueries({ queryKey: ["chats", userId] });
+      // Nur anzeigen, wenn der Chat offen ist
       if (selectedChatId && message.chatId === selectedChatId) {
-        queryClient.invalidateQueries({
-          queryKey: ["messages", selectedChatId],
-        });
+        addMessagesDedup(decrypted);
       }
+
+      // Chats (unreadBadges usw.) aktualisieren
+      queryClient.invalidateQueries({ queryKey: ["chats", userId] });
     };
 
     const handleUserStatus = (data: any) => {
@@ -242,7 +213,6 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    // nur diese beiden Listener – KEIN "message" mehr
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
@@ -250,16 +220,11 @@ export function useChat(userId?: number, socket?: any) {
       socket.off("new_message", handleNewMessage);
       socket.off("user_status", handleUserStatus);
     };
-  }, [
-    socket,
-    userId,
-    selectedChatId,
-    queryClient,
-    mergeMessages,
-    scheduleMessageDeletion,
-  ]);
+  }, [socket, userId, selectedChatId, addMessagesDedup, queryClient]);
 
-  // SENDEN – kein optimistisches Duplikat
+  /* --------------------------------------------------
+   * SENDEN – kein optimistisches setMessages
+   * -------------------------------------------------- */
   const sendMessage = useCallback(
     async (
       content: string,
@@ -272,6 +237,7 @@ export function useChat(userId?: number, socket?: any) {
 
       let chatId = selectedChatId;
 
+      // Chat ggf. anlegen
       if (!chatId) {
         try {
           const token = getToken();
@@ -313,6 +279,7 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
+        // Datei oder Bild
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
@@ -338,8 +305,8 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
+        // Text ggf. verschlüsseln
         let finalContent = messageContent;
-
         if (messageType === "text") {
           try {
             const chat: any = (chats as any[]).find(
@@ -356,6 +323,7 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
+        // Payload an WS
         const data = {
           type: "message" as const,
           chatId: chatId!,
@@ -378,7 +346,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // kein setMessages hier – Anzeige kommt über HTTP/WS oben
+        // Anzeige kommt NUR über WebSocket -> kein setMessages hier!
       } catch (err: any) {
         toast({
           title: "Failed to send message",
@@ -394,9 +362,9 @@ export function useChat(userId?: number, socket?: any) {
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
       setMessages([]);
-      queryClient.invalidateQueries({ queryKey: ["messages", chat.id] });
+      // loadMessages läuft automatisch über useEffect
     },
-    [queryClient]
+    []
   );
 
   return {
