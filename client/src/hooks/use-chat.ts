@@ -128,7 +128,7 @@ export function useChat(userId?: number, socket?: any) {
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
-    refetchInterval: 5000, // kann man auch auf 0 setzen, wenn nur WebSocket
+    refetchInterval: 5000,
     queryFn: async () =>
       authedFetch(`/api/chats/${selectedChatId}/messages`),
   });
@@ -191,6 +191,12 @@ export function useChat(userId?: number, socket?: any) {
 
       const message = data.message as Message;
 
+      // 🔥 WICHTIG: eigene Nachrichten vom WebSocket IGNORIEREN,
+      // die kommen ohnehin über HTTP-Polling rein -> sonst Doppel-Effekt
+      if (message.senderId === userId) {
+        return;
+      }
+
       let decrypted: any = { ...message };
 
       if (message.messageType === "text" && message.isEncrypted) {
@@ -236,7 +242,7 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    // ❗ nur diese beiden Listener – KEIN "message" mehr
+    // nur diese beiden Listener – KEIN "message" mehr
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
