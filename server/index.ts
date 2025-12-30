@@ -1,6 +1,8 @@
+// server/index.ts
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import storage from "./storage"; // ⬅️ NEU: für deleteUserCompletely
 
 const app = express();
 
@@ -82,6 +84,30 @@ app.use((req, res, next) => {
   });
 
   next();
+});
+
+/**
+ * ✅ HARD DELETE ROUTE (Account + Chats + Messages)
+ *    DELETE /api/users/:id/hard-delete
+ */
+app.delete("/api/users/:id/hard-delete", async (req, res) => {
+  const idParam = req.params.id;
+  const userId = Number(idParam);
+
+  if (!userId || Number.isNaN(userId)) {
+    return res.status(400).json({ ok: false, message: "Invalid user id" });
+  }
+
+  try {
+    console.log("🧨 HARD DELETE requested for user:", userId);
+    await storage.deleteUserCompletely(userId);
+    console.log("✅ HARD DELETE finished for user:", userId);
+
+    return res.status(200).json({ ok: true, message: "Account deleted" });
+  } catch (err) {
+    console.error("❌ HARD DELETE error:", err);
+    return res.status(500).json({ ok: false, message: "Failed to delete account" });
+  }
 });
 
 (async () => {
