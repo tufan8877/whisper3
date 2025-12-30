@@ -70,42 +70,70 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  // kleine Dedupe-Hilfe – falls der Server doch mal doppelt sendet
-  const dedupeMessages = useCallback((list: Message[]): Message[] => {
-    const seen = new Set<string>();
-    const result: Message[] = [];
+  // aggressive Dedupe: nach ID + "fast gleiche" Nachricht
+  const mergeMessages = useCallback(
+    (existing: Message[], incoming: Message[]): Message[] => {
+      const result: Message[] = [...existing];
 
-    for (const m of list) {
-      const key = `${m.chatId}-${m.senderId}-${m.receiverId}-${new Date(
-        m.createdAt
-      ).getTime()}-${m.content ?? ""}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        result.push(m);
+      for (const msg of incoming) {
+        let isDuplicate = false;
+
+        // 1) gleiche ID schon vorhanden
+        if (msg.id != null && existing.some((m) => m.id === msg.id)) {
+          continue;
+        }
+
+        // 2) selbe Chat-Kombi, Inhalt & ~gleiche Zeit (± 2 Sekunden)
+        for (const m of existing) {
+          if (
+            m.chatId === msg.chatId &&
+            m.senderId === msg.senderId &&
+            m.receiverId === msg.receiverId &&
+            (m.content || "") === (msg.content || "")
+          ) {
+            const t1 = new Date(m.createdAt).getTime();
+            const t2 = new Date(msg.createdAt).getTime();
+            if (Math.abs(t1 - t2) < 2000) {
+              isDuplicate = true;
+              break;
+            }
+          }
+        }
+
+        if (!isDuplicate) {
+          result.push(msg);
+        }
       }
-    }
-    return result;
-  }, []);
+
+      // nach createdAt sortieren
+      result.sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() -
+          new Date(b.createdAt).getTime()
+      );
+      return result;
+    },
+    []
+  );
 
   // CHATS
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
-    // Intervall kann bleiben – das betrifft nur die Chatliste
     refetchInterval: 10000,
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // MESSAGES (nur laden, KEIN Polling mehr – Realtime über WebSocket)
+  // MESSAGES – leichtes Polling für Sync, aber dedupe!
   const { data: chatMessages = [] } = useQuery({
     queryKey: ["messages", selectedChatId],
     enabled: !!selectedChatId,
-    // wichtig: kein refetchInterval -> keine doppelten Quellen mehr
+    refetchInterval: 5000, // kann man auch auf 0 setzen, wenn nur WebSocket
     queryFn: async () =>
       authedFetch(`/api/chats/${selectedChatId}/messages`),
   });
 
-  // eingehende Messages vom Server entschlüsseln + löschen planen
+  // HTTP-Messages verarbeiten (Decrypt + Dedupe)
   useEffect(() => {
     const processMessages = async () => {
       if (!Array.isArray(chatMessages)) {
@@ -140,18 +168,19 @@ export function useChat(userId?: number, socket?: any) {
         })
       );
 
-      const deduped = dedupeMessages(processed);
-      setMessages(deduped);
-
-      deduped.forEach((m: any) => {
-        if (!messageTimers.current.has(m.id)) {
-          scheduleMessageDeletion(m);
-        }
+      setMessages((prev) => {
+        const merged = mergeMessages(prev, processed as any);
+        merged.forEach((m) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
+          }
+        });
+        return merged;
       });
     };
 
     processMessages();
-  }, [chatMessages, scheduleMessageDeletion, dedupeMessages]);
+  }, [chatMessages, mergeMessages, scheduleMessageDeletion]);
 
   // WEBSOCKET EVENTS
   useEffect(() => {
@@ -161,13 +190,6 @@ export function useChat(userId?: number, socket?: any) {
       if (!data || data.type !== "new_message" || !data.message) return;
 
       const message = data.message as Message;
-
-      // 🔥 WICHTIG:
-      // Eigene Messages NICHT über WebSocket in den State pushen,
-      // die kommen sowieso über das HTTP-Load -> sonst doppelte Bubbles.
-      if (message.senderId === userId) {
-        return;
-      }
 
       let decrypted: any = { ...message };
 
@@ -190,15 +212,16 @@ export function useChat(userId?: number, socket?: any) {
       }
 
       setMessages((prev) => {
-        const merged = dedupeMessages([...prev, decrypted]);
+        const merged = mergeMessages(prev, [decrypted]);
+        merged.forEach((m) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
+          }
+        });
         return merged;
       });
 
-      if (!messageTimers.current.has(message.id)) {
-        scheduleMessageDeletion(message);
-      }
-
-      // Chats / Badges aktualisieren
+      // Chat-Liste / Badges refreshed
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
       if (selectedChatId && message.chatId === selectedChatId) {
         queryClient.invalidateQueries({
@@ -213,16 +236,11 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
+    // ❗ nur diese beiden Listener – KEIN "message" mehr
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
-    socket.on("message", (data: any) => {
-      if (data?.type === "new_message") handleNewMessage(data);
-      if (data?.type === "user_status") handleUserStatus(data);
-    });
-
     return () => {
-      socket.off("message");
       socket.off("new_message", handleNewMessage);
       socket.off("user_status", handleUserStatus);
     };
@@ -231,8 +249,8 @@ export function useChat(userId?: number, socket?: any) {
     userId,
     selectedChatId,
     queryClient,
+    mergeMessages,
     scheduleMessageDeletion,
-    dedupeMessages,
   ]);
 
   // SENDEN – kein optimistisches Duplikat
@@ -315,7 +333,6 @@ export function useChat(userId?: number, socket?: any) {
         }
 
         let finalContent = messageContent;
-        let isEncrypted = false;
 
         if (messageType === "text") {
           try {
@@ -327,7 +344,6 @@ export function useChat(userId?: number, socket?: any) {
                 messageContent,
                 chat.otherUser.publicKey
               );
-              isEncrypted = true;
             }
           } catch {
             // not encrypted -> plain
@@ -356,7 +372,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // kein setMessages hier – wir warten auf Server/HTTP
+        // kein setMessages hier – Anzeige kommt über HTTP/WS oben
       } catch (err: any) {
         toast({
           title: "Failed to send message",
