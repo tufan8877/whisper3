@@ -66,7 +66,7 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  // ----------------- CHATS -----------------
+  // -------- CHATS --------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -74,7 +74,7 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  // ----------------- MESSAGES: Initial-Load pro Chat -----------------
+  // -------- MESSAGES: Initial-Load bei Chat-Wechsel --------
   useEffect(() => {
     const loadMessages = async () => {
       if (!selectedChatId) {
@@ -132,7 +132,7 @@ export function useChat(userId?: number, socket?: any) {
     loadMessages();
   }, [selectedChatId, authedFetch, scheduleMessageDeletion]);
 
-  // ----------------- WEBSOCKET EVENTS -----------------
+  // -------- WEBSOCKET EVENTS --------
   useEffect(() => {
     if (!socket) return;
 
@@ -159,31 +159,39 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      // Chat nicht offen -> nur Liste aktualisieren
+      // Chat ist gerade nicht geöffnet → nur Chatliste updaten
       if (decrypted.chatId !== selectedChatId) {
         queryClient.invalidateQueries({ queryKey: ["chats", userId] });
         return;
       }
 
       setMessages((prev) => {
-        // 🔒 HARTE DEDUPE: gleiche ID ODER gleiche (sender,chat,createdAt,content)
-        const exists = prev.some(
-          (m) =>
-            m.id === decrypted.id ||
-            (m.senderId === decrypted.senderId &&
-              m.chatId === decrypted.chatId &&
-              String(m.createdAt) === String(decrypted.createdAt) &&
-              m.content === decrypted.content)
-        );
-        if (exists) return prev;
+        const id = decrypted.id;
 
-        const next = [...prev, decrypted as Message];
-        if (!messageTimers.current.has(decrypted.id)) {
+        // HARTE DEDUPE: gleiche ID rauswerfen und durch neuesten ersetzen
+        const withoutSameId = prev.filter((m) => m.id !== id);
+
+        // falls id bei einem alt/buggy Call fehlt, zusätzlich auf (sender,chat,content,createdAt) prüfen
+        const existsSoft = withoutSameId.some(
+          (m) =>
+            m.senderId === decrypted.senderId &&
+            m.chatId === decrypted.chatId &&
+            m.content === decrypted.content &&
+            String(m.createdAt) === String(decrypted.createdAt)
+        );
+        if (existsSoft) {
+          return withoutSameId; // nichts anhängen, wir haben schon eine passende Version
+        }
+
+        const next = [...withoutSameId, decrypted as Message];
+
+        if (!messageTimers.current.has(id)) {
           scheduleMessageDeletion(decrypted as any);
         }
         return next;
       });
 
+      // Chatliste aktualisieren (letzte Nachricht / unread)
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
     };
 
@@ -193,7 +201,7 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
-    // ❗️WICHTIG: Nur diese Listener – KEIN "message"-Event benutzen!
+    // Nur diese Events verwenden – KEIN socket.on("message")
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
@@ -203,7 +211,7 @@ export function useChat(userId?: number, socket?: any) {
     };
   }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
-  // ----------------- SENDEN -----------------
+  // -------- SENDEN --------
   const sendMessage = useCallback(
     async (
       content: string,
@@ -216,7 +224,6 @@ export function useChat(userId?: number, socket?: any) {
 
       let chatId = selectedChatId;
 
-      // neuen Chat anlegen falls nötig
       if (!chatId) {
         try {
           const token = getToken();
@@ -327,7 +334,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // ⚠️ Keine lokale Nachricht hinzufügen – wir warten auf "new_message"
+        // KEIN optimistisches setMessages – wir warten auf "new_message"
       } catch (err: any) {
         toast({
           title: "Failed to send message",
