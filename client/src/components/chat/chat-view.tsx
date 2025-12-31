@@ -1,3 +1,4 @@
+// client/src/components/chat/chat-view.tsx
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,6 +35,8 @@ interface ChatViewProps {
   ) => void;
   isConnected: boolean;
   onBackToList: () => void;
+
+  // Tipp-Funktion
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -50,19 +53,22 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300");
+  const [destructTimer, setDestructTimer] = useState("300"); // 5 min default
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Für Tipp-Status
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
 
+  // Auto-scroll bei neuen Nachrichten
   useEffect(() => {
     if (!messagesEndRef.current) return;
     messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length]);
 
+  // Beim Chat-Wechsel Eingabe & Tipp-Status zurücksetzen
   useEffect(() => {
     setMessageInput("");
     if (onTyping && isTypingRef.current) {
@@ -98,6 +104,7 @@ export default function ChatView({
     onSendMessage(text, "text", parseInt(destructTimer, 10));
     setMessageInput("");
 
+    // Tipp-Status beenden
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
@@ -117,11 +124,13 @@ export default function ChatView({
 
     if (!onTyping) return;
 
+    // erstes Zeichen -> "tippt"
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
+    // wenn 1,5s keine Taste, dann "tippt nicht"
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       if (isTypingRef.current) {
@@ -139,7 +148,7 @@ export default function ChatView({
       return;
     }
 
-    const maxSize = 10 * 1024 * 1024;
+    const maxSize = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSize) {
       alert(t("fileTooLarge"));
       return;
@@ -186,11 +195,12 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background min-h-0">
+    <div className="flex flex-col h-full bg-background">
       {/* HEADER */}
       <div className="bg-background border-b border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
+            {/* Zurück (mobil) */}
             <button
               onClick={onBackToList}
               className="md:hidden text-muted-foreground hover:text-foreground"
@@ -198,6 +208,7 @@ export default function ChatView({
               <ArrowLeft className="w-5 h-5" />
             </button>
 
+            {/* Avatar + Name + Status */}
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-muted-foreground text-sm">👤</span>
@@ -223,6 +234,7 @@ export default function ChatView({
             </div>
           </div>
 
+          {/* Timer + Menü rechts */}
           <div className="flex items-center gap-3 flex-shrink-0">
             <div className="flex items-center gap-1 bg-muted/30 rounded-lg px-2 py-1">
               <Clock className="w-3 h-3 text-muted-foreground" />
@@ -269,8 +281,8 @@ export default function ChatView({
         </div>
       </div>
 
-      {/* MESSAGES */}
-      <div className="flex-1 overflow-y-auto min-h-0 px-3 pt-3 pb-20 space-y-3 bg-background">
+      {/* MESSAGES (nur Nachrichten, KEIN Tipp-Indikator mehr hier) */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background">
         {messages.map((m) => (
           <Message
             key={m.id}
@@ -280,29 +292,30 @@ export default function ChatView({
           />
         ))}
 
-        {isPartnerTyping && (
-          <div className="flex w-full justify-start">
-            <div className="flex items-end gap-2">
-              <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-muted-foreground text-xs">👤</span>
-              </div>
-              <div className="bg-surface rounded-2xl rounded-tl-md px-3 py-2">
-                <div className="flex gap-1 items-center">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:-0.2s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:-0.1s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce" />
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         <div ref={messagesEndRef} />
       </div>
+
+      {/* NEU: Tipp-Indikator als eigene Leiste direkt über dem Eingabefeld */}
+      {isPartnerTyping && (
+        <div className="px-4 py-1 flex items-center gap-2 bg-background border-t border-border/60 flex-shrink-0">
+          <div className="w-6 h-6 bg-muted rounded-full flex items-center justify-center">
+            <span className="text-muted-foreground text-[11px]">👤</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:-0.2s]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:-0.1s]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce" />
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {t("typing") ?? "typing..."}
+          </span>
+        </div>
+      )}
 
       {/* INPUT-BEREICH */}
       <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-end gap-2 w-full">
+          {/* Anhang */}
           <Button
             variant="ghost"
             size="icon"
@@ -312,6 +325,7 @@ export default function ChatView({
             <Paperclip className="w-5 h-5" />
           </Button>
 
+          {/* Kamera */}
           <Button
             variant="ghost"
             size="icon"
@@ -321,11 +335,10 @@ export default function ChatView({
             <Camera className="w-5 h-5" />
           </Button>
 
+          {/* Textarea nimmt ALLE Breite zwischen Icons & Button */}
           <div className="flex-1 min-w-0">
             <Textarea
-              placeholder={
-                isConnected ? t("typeMessage") : t("connecting")
-              }
+              placeholder={isConnected ? t("typeMessage") : t("connecting")}
               value={messageInput}
               onChange={handleInputChange}
               onKeyDown={handleKeyPress}
@@ -334,6 +347,7 @@ export default function ChatView({
             />
           </div>
 
+          {/* Senden-Button */}
           <Button
             onClick={handleSendMessage}
             disabled={!messageInput.trim() || !isConnected}
@@ -343,6 +357,7 @@ export default function ChatView({
           </Button>
         </div>
 
+        {/* Status-Zeile unten */}
         <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
           <div className="flex items-center gap-1">
             <Lock className="w-3 h-3 text-green-500" />
@@ -356,6 +371,7 @@ export default function ChatView({
           </div>
         </div>
 
+        {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
