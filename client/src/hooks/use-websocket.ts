@@ -57,12 +57,11 @@ export function useWebSocket(userId?: number) {
         wsRef.current.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            // Spezifisches Event
-            if (data.type) {
+
+            if (data?.type) {
+              // Nur das konkrete Event dispatchen – KEIN "message"-Fallback mehr
               emit(data.type, data);
             }
-            // Generisch – nur falls jemand "message" abonniert
-            emit("message", data);
           } catch (error) {
             console.error("❌ Failed to parse message:", error);
           }
