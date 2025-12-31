@@ -1,4 +1,3 @@
-// client/src/hooks/useChat.ts
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -14,9 +13,6 @@ export function useChat(userId?: number, socket?: any) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  /* --------------------------------------------------
-   * Helpers
-   * -------------------------------------------------- */
   const getToken = useCallback(() => {
     try {
       const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -54,11 +50,8 @@ export function useChat(userId?: number, socket?: any) {
   );
 
   const scheduleMessageDeletion = useCallback((message: Message) => {
-    if (!message.expiresAt) return;
-
     const timeUntilExpiry =
       new Date(message.expiresAt).getTime() - Date.now();
-    if (!Number.isFinite(timeUntilExpiry)) return;
 
     if (timeUntilExpiry <= 0) {
       setMessages((prev) => prev.filter((m) => m.id !== message.id));
@@ -73,42 +66,7 @@ export function useChat(userId?: number, socket?: any) {
     messageTimers.current.set(message.id, timer);
   }, []);
 
-  const addMessagesDedup = useCallback(
-    (incoming: Message | Message[]) => {
-      const list = Array.isArray(incoming) ? incoming : [incoming];
-
-      setMessages((prev) => {
-        const existingIds = new Set(
-          prev.filter((m) => m.id != null).map((m) => m.id as number)
-        );
-
-        const merged = [...prev];
-        for (const msg of list) {
-          if (msg.id != null && existingIds.has(msg.id)) continue;
-          merged.push(msg);
-        }
-
-        merged.sort(
-          (a, b) =>
-            new Date(a.createdAt).getTime() -
-            new Date(b.createdAt).getTime()
-        );
-
-        merged.forEach((m) => {
-          if (!messageTimers.current.has(m.id)) {
-            scheduleMessageDeletion(m);
-          }
-        });
-
-        return merged;
-      });
-    },
-    [scheduleMessageDeletion]
-  );
-
-  /* --------------------------------------------------
-   * CHATS LIST (React Query wie gehabt)
-   * -------------------------------------------------- */
+  // ----------------- CHATS -----------------
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats", userId],
     enabled: !!userId,
@@ -116,23 +74,28 @@ export function useChat(userId?: number, socket?: any) {
     queryFn: async () => authedFetch(`/api/chats/${userId}`),
   });
 
-  /* --------------------------------------------------
-   * Nachrichten für einen Chat EINMAL laden
-   * -------------------------------------------------- */
-  const loadMessages = useCallback(
-    async (chatId: number) => {
+  // ----------------- MESSAGES: Initial-Load pro Chat -----------------
+  useEffect(() => {
+    const loadMessages = async () => {
+      if (!selectedChatId) {
+        setMessages([]);
+        return;
+      }
+
       try {
-        const rawMessages: any[] = await authedFetch(
-          `/api/chats/${chatId}/messages`
-        );
+        const data = await authedFetch(`/api/chats/${selectedChatId}/messages`);
+        if (!Array.isArray(data)) {
+          setMessages([]);
+          return;
+        }
 
         const processed = await Promise.all(
-          rawMessages.map(async (message: any) => {
+          data.map(async (message: any) => {
             if (message.messageType === "text" && message.isEncrypted) {
               try {
-                const rawUser = localStorage.getItem("user");
-                if (rawUser) {
-                  const u = JSON.parse(rawUser);
+                const raw = localStorage.getItem("user");
+                if (raw) {
+                  const u = JSON.parse(raw);
                   if (u.privateKey) {
                     const decrypted = await decryptMessage(
                       message.content,
@@ -153,38 +116,36 @@ export function useChat(userId?: number, socket?: any) {
           })
         );
 
-        setMessages([]);
-        addMessagesDedup(processed as any);
+        setMessages(processed);
+
+        processed.forEach((m: any) => {
+          if (!messageTimers.current.has(m.id)) {
+            scheduleMessageDeletion(m);
+          }
+        });
       } catch (err) {
-        console.error("loadMessages error:", err);
+        console.error("Load messages error:", err);
+        setMessages([]);
       }
-    },
-    [authedFetch, addMessagesDedup]
-  );
+    };
 
-  useEffect(() => {
-    if (!selectedChatId) return;
-    loadMessages(selectedChatId);
-  }, [selectedChatId, loadMessages]);
+    loadMessages();
+  }, [selectedChatId, authedFetch, scheduleMessageDeletion]);
 
-  /* --------------------------------------------------
-   * WEBSOCKET EVENTS – EINZIGE Quelle für neue Nachrichten
-   * -------------------------------------------------- */
+  // ----------------- WEBSOCKET EVENTS -----------------
   useEffect(() => {
-    if (!socket || !userId) return;
+    if (!socket) return;
 
     const handleNewMessage = async (data: any) => {
-      if (!data || data.type !== "new_message" || !data.message) return;
-
-      const message = data.message as Message;
-
-      let decrypted: any = { ...message };
+      if (!data.message) return;
+      const message = data.message;
+      let decrypted = { ...message };
 
       if (message.messageType === "text" && message.isEncrypted) {
         try {
-          const rawUser = localStorage.getItem("user");
-          if (rawUser) {
-            const u = JSON.parse(rawUser);
+          const raw = localStorage.getItem("user");
+          if (raw) {
+            const u = JSON.parse(raw);
             if (u.privateKey) {
               decrypted.content = await decryptMessage(
                 message.content,
@@ -198,12 +159,23 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      // Nur anzeigen, wenn der Chat offen ist
-      if (selectedChatId && message.chatId === selectedChatId) {
-        addMessagesDedup(decrypted);
+      // ✅ Nur hinzufügen, wenn Chat aktuell geöffnet ist
+      if (decrypted.chatId !== selectedChatId) {
+        // aber trotzdem Chats neu laden (unread)
+        queryClient.invalidateQueries({ queryKey: ["chats", userId] });
+        return;
       }
 
-      // Chats (unreadBadges usw.) aktualisieren
+      setMessages((prev) => {
+        // Dedupe über ID
+        if (prev.some((m) => m.id === decrypted.id)) return prev;
+        const next = [...prev, decrypted as Message];
+        if (!messageTimers.current.has(decrypted.id)) {
+          scheduleMessageDeletion(decrypted as any);
+        }
+        return next;
+      });
+
       queryClient.invalidateQueries({ queryKey: ["chats", userId] });
     };
 
@@ -220,11 +192,9 @@ export function useChat(userId?: number, socket?: any) {
       socket.off("new_message", handleNewMessage);
       socket.off("user_status", handleUserStatus);
     };
-  }, [socket, userId, selectedChatId, addMessagesDedup, queryClient]);
+  }, [socket, userId, selectedChatId, queryClient, scheduleMessageDeletion]);
 
-  /* --------------------------------------------------
-   * SENDEN – kein optimistisches setMessages
-   * -------------------------------------------------- */
+  // ----------------- SENDEN -----------------
   const sendMessage = useCallback(
     async (
       content: string,
@@ -237,7 +207,7 @@ export function useChat(userId?: number, socket?: any) {
 
       let chatId = selectedChatId;
 
-      // Chat ggf. anlegen
+      // neuen Chat anlegen falls nötig
       if (!chatId) {
         try {
           const token = getToken();
@@ -260,7 +230,8 @@ export function useChat(userId?: number, socket?: any) {
             throw new Error(body?.message || "Failed to create chat");
           }
 
-          const newChat = await res.json();
+          const result = await res.json();
+          const newChat = result.chat ?? result;
           chatId = newChat.id;
           setSelectedChatId(newChat.id);
           queryClient.invalidateQueries({ queryKey: ["chats", userId] });
@@ -279,7 +250,6 @@ export function useChat(userId?: number, socket?: any) {
         let fileName: string | undefined;
         let fileSize: number | undefined;
 
-        // Datei oder Bild
         if (file && messageType !== "text") {
           if (file.type.startsWith("image/")) {
             const reader = new FileReader();
@@ -305,8 +275,9 @@ export function useChat(userId?: number, socket?: any) {
           }
         }
 
-        // Text ggf. verschlüsseln
         let finalContent = messageContent;
+        let isEncrypted = false;
+
         if (messageType === "text") {
           try {
             const chat: any = (chats as any[]).find(
@@ -317,13 +288,13 @@ export function useChat(userId?: number, socket?: any) {
                 messageContent,
                 chat.otherUser.publicKey
               );
+              isEncrypted = true;
             }
           } catch {
             // not encrypted -> plain
           }
         }
 
-        // Payload an WS
         const data = {
           type: "message" as const,
           chatId: chatId!,
@@ -334,6 +305,7 @@ export function useChat(userId?: number, socket?: any) {
           fileName,
           fileSize,
           destructTimer,
+          isEncrypted,
         };
 
         const connected =
@@ -346,7 +318,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // Anzeige kommt NUR über WebSocket -> kein setMessages hier!
+        // Keine lokale Kopie hinzufügen – wir warten auf new_message
       } catch (err: any) {
         toast({
           title: "Failed to send message",
@@ -362,7 +334,6 @@ export function useChat(userId?: number, socket?: any) {
     (chat: Chat & { otherUser: User }) => {
       setSelectedChatId(chat.id);
       setMessages([]);
-      // loadMessages läuft automatisch über useEffect
     },
     []
   );
