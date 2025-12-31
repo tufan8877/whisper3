@@ -50,7 +50,7 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 min
+  const [destructTimer, setDestructTimer] = useState("300");
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -186,7 +186,7 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background min-h-0">
       {/* HEADER */}
       <div className="bg-background border-b border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
@@ -270,7 +270,7 @@ export default function ChatView({
       </div>
 
       {/* MESSAGES */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background">
+      <div className="flex-1 overflow-y-auto min-h-0 px-3 pt-3 pb-20 space-y-3 bg-background">
         {messages.map((m) => (
           <Message
             key={m.id}
@@ -300,7 +300,7 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* INPUT */}
+      {/* INPUT-BEREICH */}
       <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-end gap-2 w-full">
           <Button
