@@ -5,9 +5,18 @@ export function useWebSocket(userId?: number) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
-  const [connectionAttempts, setConnectionAttempts] = useState(0);
-  
 
+  // Token aus localStorage holen (gleich wie in useChat)
+  const getToken = () => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (!raw) return null;
+      const u = JSON.parse(raw);
+      return u?.token || u?.accessToken || null;
+    } catch {
+      return null;
+    }
+  };
 
   useEffect(() => {
     if (!userId) {
@@ -15,59 +24,59 @@ export function useWebSocket(userId?: number) {
       return;
     }
 
-    console.log("🔄 useWebSocket: Creating DIRECT WebSocket for user:", userId);
-    
+    console.log("🔄 useWebSocket: Creating WebSocket for user:", userId);
+
     const connect = () => {
-      // Direct connection to correct port - Replit serves on 5000
-      const wsUrl = `ws://${window.location.hostname}:5000/ws`;
-      
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+
       console.log("🔌 Connecting to WebSocket:", wsUrl);
-      setConnectionAttempts(prev => prev + 1);
-      
+
       try {
         wsRef.current = new WebSocket(wsUrl);
-      
+
         wsRef.current.onopen = () => {
           console.log("✅ WebSocket connected for user:", userId);
           setIsConnected(true);
-          
-          // Send join message immediately
-          const joinMessage = { type: "join", userId };
-          wsRef.current?.send(JSON.stringify(joinMessage));
-          
-          // Emit connected event
+
+          const token = getToken();
+          if (!token) {
+            console.warn("⚠️ No token for WebSocket join");
+          } else {
+            // 🔑 Server erwartet token, NICHT userId
+            const joinMessage = { type: "join", token };
+            wsRef.current?.send(JSON.stringify(joinMessage));
+          }
+
           emit("connected");
         };
-      
+
         wsRef.current.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            console.log("📥 Received:", data.type);
-            
-            // Emit specific event type
+            console.log("📥 WS Received:", data.type || "unknown");
+
             if (data.type) {
               emit(data.type, data);
             }
-            
-            // Also emit general message event
+
             emit("message", data);
           } catch (error) {
-            console.error("❌ Failed to parse message:", error);
+            console.error("❌ Failed to parse WS message:", error);
           }
         };
-      
-        wsRef.current.onclose = (event) => {
+
+        wsRef.current.onclose = () => {
           console.log("❌ WebSocket disconnected");
           setIsConnected(false);
           emit("disconnected");
-          
-          // Auto-reconnect after 3 seconds
+
           reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("🔄 Reconnecting...");
+            console.log("🔄 Reconnecting WebSocket…");
             connect();
           }, 3000);
         };
-      
+
         wsRef.current.onerror = (error) => {
           console.error("❌ WebSocket error:", error);
           setIsConnected(false);
@@ -78,11 +87,11 @@ export function useWebSocket(userId?: number) {
         setIsConnected(false);
       }
     };
-    
+
     connect();
 
     return () => {
-      console.log("🧹 DIRECT: Cleaning up WebSocket");
+      console.log("🧹 Cleaning up WebSocket");
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -96,17 +105,17 @@ export function useWebSocket(userId?: number) {
   const emit = (event: string, data?: any) => {
     const handlers = eventHandlersRef.current.get(event);
     if (handlers) {
-      handlers.forEach(handler => handler(data));
+      handlers.forEach((handler) => handler(data));
     }
   };
 
   const send = (message: any) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log("📤 DIRECT: Sending message:", message);
+      console.log("📤 WS Sending:", message);
       wsRef.current.send(JSON.stringify(message));
       return true;
     } else {
-      console.error("❌ DIRECT: Cannot send - WebSocket not connected");
+      console.error("❌ Cannot send – WebSocket not connected");
       return false;
     }
   };
@@ -123,13 +132,11 @@ export function useWebSocket(userId?: number) {
       eventHandlersRef.current.delete(event);
       return;
     }
-    
+
     const handlers = eventHandlersRef.current.get(event);
     if (handlers) {
       const index = handlers.indexOf(handler);
-      if (index > -1) {
-        handlers.splice(index, 1);
-      }
+      if (index > -1) handlers.splice(index, 1);
     }
   };
 
@@ -137,7 +144,7 @@ export function useWebSocket(userId?: number) {
     send,
     on,
     off,
-    isConnected: () => wsRef.current?.readyState === WebSocket.OPEN
+    isConnected: () => wsRef.current?.readyState === WebSocket.OPEN,
   };
 
   return { socket, isConnected };
