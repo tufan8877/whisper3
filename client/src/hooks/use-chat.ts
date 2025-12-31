@@ -159,16 +159,24 @@ export function useChat(userId?: number, socket?: any) {
         }
       }
 
-      // ✅ Nur hinzufügen, wenn Chat aktuell geöffnet ist
+      // Chat nicht offen -> nur Liste aktualisieren
       if (decrypted.chatId !== selectedChatId) {
-        // aber trotzdem Chats neu laden (unread)
         queryClient.invalidateQueries({ queryKey: ["chats", userId] });
         return;
       }
 
       setMessages((prev) => {
-        // Dedupe über ID
-        if (prev.some((m) => m.id === decrypted.id)) return prev;
+        // 🔒 HARTE DEDUPE: gleiche ID ODER gleiche (sender,chat,createdAt,content)
+        const exists = prev.some(
+          (m) =>
+            m.id === decrypted.id ||
+            (m.senderId === decrypted.senderId &&
+              m.chatId === decrypted.chatId &&
+              String(m.createdAt) === String(decrypted.createdAt) &&
+              m.content === decrypted.content)
+        );
+        if (exists) return prev;
+
         const next = [...prev, decrypted as Message];
         if (!messageTimers.current.has(decrypted.id)) {
           scheduleMessageDeletion(decrypted as any);
@@ -185,6 +193,7 @@ export function useChat(userId?: number, socket?: any) {
       }
     };
 
+    // ❗️WICHTIG: Nur diese Listener – KEIN "message"-Event benutzen!
     socket.on("new_message", handleNewMessage);
     socket.on("user_status", handleUserStatus);
 
@@ -318,7 +327,7 @@ export function useChat(userId?: number, socket?: any) {
         const ok = socket.send(data);
         if (!ok) throw new Error("Failed to send message");
 
-        // Keine lokale Kopie hinzufügen – wir warten auf new_message
+        // ⚠️ Keine lokale Nachricht hinzufügen – wir warten auf "new_message"
       } catch (err: any) {
         toast({
           title: "Failed to send message",
