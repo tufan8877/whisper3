@@ -3,18 +3,13 @@ import { useState, useEffect, useRef } from "react";
 export function useWebSocket(userId?: number) {
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
 
-  // Token aus localStorage holen (gleich wie in useChat)
-  const getToken = () => {
-    try {
-      const raw = localStorage.getItem("user");
-      if (!raw) return null;
-      const u = JSON.parse(raw);
-      return u?.token || u?.accessToken || null;
-    } catch {
-      return null;
+  const emit = (event: string, data?: any) => {
+    const handlers = eventHandlersRef.current.get(event);
+    if (handlers) {
+      handlers.forEach((handler) => handler(data));
     }
   };
 
@@ -27,8 +22,8 @@ export function useWebSocket(userId?: number) {
     console.log("🔄 useWebSocket: Creating WebSocket for user:", userId);
 
     const connect = () => {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = `${protocol}://${window.location.host}/ws`;
 
       console.log("🔌 Connecting to WebSocket:", wsUrl);
 
@@ -39,14 +34,22 @@ export function useWebSocket(userId?: number) {
           console.log("✅ WebSocket connected for user:", userId);
           setIsConnected(true);
 
-          const token = getToken();
-          if (!token) {
-            console.warn("⚠️ No token for WebSocket join");
-          } else {
-            // 🔑 Server erwartet token, NICHT userId
-            const joinMessage = { type: "join", token };
-            wsRef.current?.send(JSON.stringify(joinMessage));
-          }
+          // Token für JOIN holen
+          let token: string | null = null;
+          try {
+            const raw = localStorage.getItem("user");
+            if (raw) {
+              const u = JSON.parse(raw);
+              token = u.token || u.accessToken || null;
+            }
+          } catch {}
+
+          wsRef.current?.send(
+            JSON.stringify({
+              type: "join",
+              token,
+            })
+          );
 
           emit("connected");
         };
@@ -54,15 +57,14 @@ export function useWebSocket(userId?: number) {
         wsRef.current.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            console.log("📥 WS Received:", data.type || "unknown");
-
+            // Spezifisches Event
             if (data.type) {
               emit(data.type, data);
             }
-
+            // Generisch – nur falls jemand "message" abonniert
             emit("message", data);
           } catch (error) {
-            console.error("❌ Failed to parse WS message:", error);
+            console.error("❌ Failed to parse message:", error);
           }
         };
 
@@ -72,7 +74,7 @@ export function useWebSocket(userId?: number) {
           emit("disconnected");
 
           reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("🔄 Reconnecting WebSocket…");
+            console.log("🔄 Reconnecting...");
             connect();
           }, 3000);
         };
@@ -92,30 +94,19 @@ export function useWebSocket(userId?: number) {
 
     return () => {
       console.log("🧹 Cleaning up WebSocket");
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) wsRef.current.close();
       eventHandlersRef.current.clear();
     };
   }, [userId]);
 
-  const emit = (event: string, data?: any) => {
-    const handlers = eventHandlersRef.current.get(event);
-    if (handlers) {
-      handlers.forEach((handler) => handler(data));
-    }
-  };
-
   const send = (message: any) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log("📤 WS Sending:", message);
+      console.log("📤 Sending WS message:", message);
       wsRef.current.send(JSON.stringify(message));
       return true;
     } else {
-      console.error("❌ Cannot send – WebSocket not connected");
+      console.error("❌ Cannot send - WebSocket not connected");
       return false;
     }
   };
@@ -132,7 +123,6 @@ export function useWebSocket(userId?: number) {
       eventHandlersRef.current.delete(event);
       return;
     }
-
     const handlers = eventHandlersRef.current.get(event);
     if (handlers) {
       const index = handlers.indexOf(handler);
