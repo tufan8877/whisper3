@@ -1,16 +1,36 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
+type Handler = (data?: any) => void;
 
 export function useWebSocket(userId?: number) {
   const [isConnected, setIsConnected] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
+  const eventHandlersRef = useRef<Map<string, Handler[]>>(new Map());
+  const manualCloseRef = useRef(false);
+
+  const getToken = () => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (!raw) return null;
+      const u = JSON.parse(raw);
+      return u?.token || u?.accessToken || localStorage.getItem("token") || null;
+    } catch {
+      return localStorage.getItem("token");
+    }
+  };
 
   const emit = (event: string, data?: any) => {
     const handlers = eventHandlersRef.current.get(event);
-    if (handlers) {
-      handlers.forEach((handler) => handler(data));
-    }
+    if (!handlers) return;
+    handlers.forEach((fn) => {
+      try {
+        fn(data);
+      } catch (e) {
+        console.error("WS handler error:", e);
+      }
+    });
   };
 
   useEffect(() => {
@@ -19,69 +39,63 @@ export function useWebSocket(userId?: number) {
       return;
     }
 
-    console.log("🔄 useWebSocket: Creating WebSocket for user:", userId);
+    manualCloseRef.current = false;
 
     const connect = () => {
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const wsUrl = `${protocol}://${window.location.host}/ws`;
+      if (manualCloseRef.current) return;
+
+      // ws/wss automatisch passend zum Browser-Protokoll
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = `${proto}://${window.location.host}/ws`;
 
       console.log("🔌 Connecting to WebSocket:", wsUrl);
 
       try {
-        wsRef.current = new WebSocket(wsUrl);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-        wsRef.current.onopen = () => {
-          console.log("✅ WebSocket connected for user:", userId);
+        ws.onopen = () => {
+          console.log("✅ WebSocket connected");
           setIsConnected(true);
-
-          // Token für JOIN holen
-          let token: string | null = null;
-          try {
-            const raw = localStorage.getItem("user");
-            if (raw) {
-              const u = JSON.parse(raw);
-              token = u.token || u.accessToken || null;
-            }
-          } catch {}
-
-          wsRef.current?.send(
-            JSON.stringify({
-              type: "join",
-              token,
-            })
-          );
-
           emit("connected");
+
+          // JOIN mit TOKEN (Server verlangt token!)
+          const token = getToken();
+          const joinMessage = { type: "join", token };
+          ws.send(JSON.stringify(joinMessage));
         };
 
-        wsRef.current.onmessage = (event) => {
+        ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-
-            if (data?.type) {
-              // Nur das konkrete Event dispatchen – KEIN "message"-Fallback mehr
-              emit(data.type, data);
-            }
+            // 1) spezifisches Event (new_message, user_status, typing, ...)
+            if (data?.type) emit(data.type, data);
+            // 2) allgemeines Event
+            emit("message", data);
           } catch (error) {
-            console.error("❌ Failed to parse message:", error);
+            console.error("❌ Failed to parse WS message:", error);
           }
         };
 
-        wsRef.current.onclose = () => {
+        ws.onclose = () => {
           console.log("❌ WebSocket disconnected");
           setIsConnected(false);
           emit("disconnected");
 
+          if (manualCloseRef.current) return;
+
+          // Reconnect nach 2s
+          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = setTimeout(() => {
             console.log("🔄 Reconnecting...");
             connect();
-          }, 3000);
+          }, 2000);
         };
 
-        wsRef.current.onerror = (error) => {
-          console.error("❌ WebSocket error:", error);
+        ws.onerror = (err) => {
+          console.error("❌ WebSocket error:", err);
           setIsConnected(false);
-          emit("error", error);
+          emit("error", err);
         };
       } catch (error) {
         console.error("❌ Failed to create WebSocket:", error);
@@ -93,40 +107,49 @@ export function useWebSocket(userId?: number) {
 
     return () => {
       console.log("🧹 Cleaning up WebSocket");
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (wsRef.current) wsRef.current.close();
+      manualCloseRef.current = true;
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
+      }
+
       eventHandlersRef.current.clear();
+      setIsConnected(false);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   const send = (message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log("📤 Sending WS message:", message);
-      wsRef.current.send(JSON.stringify(message));
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
       return true;
-    } else {
-      console.error("❌ Cannot send - WebSocket not connected");
-      return false;
     }
+    return false;
   };
 
-  const on = (event: string, handler: Function) => {
-    if (!eventHandlersRef.current.has(event)) {
-      eventHandlersRef.current.set(event, []);
-    }
+  const on = (event: string, handler: Handler) => {
+    if (!eventHandlersRef.current.has(event)) eventHandlersRef.current.set(event, []);
     eventHandlersRef.current.get(event)!.push(handler);
   };
 
-  const off = (event: string, handler?: Function) => {
+  const off = (event: string, handler?: Handler) => {
     if (!handler) {
       eventHandlersRef.current.delete(event);
       return;
     }
     const handlers = eventHandlersRef.current.get(event);
-    if (handlers) {
-      const index = handlers.indexOf(handler);
-      if (index > -1) handlers.splice(index, 1);
-    }
+    if (!handlers) return;
+    const idx = handlers.indexOf(handler);
+    if (idx >= 0) handlers.splice(idx, 1);
   };
 
   const socket = {
