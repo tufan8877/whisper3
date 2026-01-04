@@ -33,9 +33,9 @@ interface SidebarProps {
   onOpenSettings: () => void;
   isConnected: boolean;
   isLoading: boolean;
-  isPersistentMode?: boolean; // New prop for persistent chat mode
-  unreadCounts?: Map<number, number>; // WhatsApp-style unread message counts
-  onRefreshChats?: () => void; // Callback to refresh chat list
+  isPersistentMode?: boolean;
+  unreadCounts?: Map<number, number>;
+  onRefreshChats?: () => void;
 }
 
 export default function Sidebar({
@@ -51,22 +51,48 @@ export default function Sidebar({
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showNewChatDialog, setShowNewChatDialog] = useState(false);
-  const [, setLocation] = useLocation();
+
+  const [location, setLocation] = useLocation();
   const { t } = useLanguage();
 
-  // 👉 Scroll-Ref für die Chatliste
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Beim Anzeigen der Sidebar IMMER ganz nach oben scrollen
-  useEffect(() => {
-    // Fenster nach oben
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  // ✅ Helper: immer ganz nach oben (Fenster + Sidebar Liste)
+  const hardScrollTop = () => {
+    try {
+      // window
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } catch {}
+    try {
+      // chat list
+      if (listRef.current) listRef.current.scrollTop = 0;
+    } catch {}
+  };
 
-    // Chatliste nach oben
-    if (listRef.current) {
-      listRef.current.scrollTop = 0;
-    }
+  // ✅ iOS/Safari Scroll-Restore Fix:
+  // - beim Mount
+  // - wenn User wechselt (Login)
+  // - wenn Dialog auf/zu
+  // - wenn Route wechselt
+  useEffect(() => {
+    hardScrollTop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    hardScrollTop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    hardScrollTop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNewChatDialog]);
+
+  useEffect(() => {
+    hardScrollTop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location]);
 
   const { data: searchResults } = useQuery({
     queryKey: ["search-users", searchQuery, currentUser.id],
@@ -74,9 +100,7 @@ export default function Sidebar({
     queryFn: async () => {
       const response = await apiRequest(
         "GET",
-        `/api/search-users?q=${encodeURIComponent(
-          searchQuery
-        )}&excludeId=${currentUser.id}`
+        `/api/search-users?q=${encodeURIComponent(searchQuery)}&excludeId=${currentUser.id}`
       );
       return response.json();
     },
@@ -84,71 +108,40 @@ export default function Sidebar({
 
   const handleStartChat = async (user: User) => {
     try {
-      console.log(
-        "🚀 Starting SEPARATE 1:1 chat with user:",
-        user.username,
-        "ID:",
-        user.id
-      );
-      console.log("🔍 Current user ID:", currentUser.id);
-
-      // First check if chat already exists between these specific users
-      const existingChat = chats.find(
-        (chat) => chat.otherUser.id === user.id
-      );
+      // Chat existiert schon?
+      const existingChat = chats.find((chat) => chat.otherUser.id === user.id);
 
       if (existingChat) {
-        console.log(
-          "💬 Found existing 1:1 chat:",
-          existingChat.id,
-          "between",
-          currentUser.id,
-          "and",
-          user.id
-        );
         onSelectChat(existingChat);
         setShowNewChatDialog(false);
         setSearchQuery("");
+        hardScrollTop();
         return;
       }
 
-      // Create new SEPARATED chat for these specific users
-      console.log(
-        "💬 Creating NEW 1:1 chat between users:",
-        currentUser.id,
-        "and",
-        user.id
-      );
+      // Chat anlegen
       const response = await apiRequest("POST", "/api/chats", {
         participant1Id: currentUser.id,
         participant2Id: user.id,
       });
-      const chat = await response.json();
-      console.log(
-        "✅ NEW 1:1 chat created with ID:",
-        chat.id,
-        "for users",
-        currentUser.id,
-        "and",
-        user.id
-      );
 
-      const chatWithUser = { ...chat, otherUser: user };
+      const result = await response.json();
+      // dein Server liefert {ok:true, chat} – wir fangen beides ab
+      const createdChat = result?.chat ?? result;
+
+      const chatWithUser = { ...createdChat, otherUser: user };
       onSelectChat(chatWithUser);
+
       setShowNewChatDialog(false);
       setSearchQuery("");
-
-      console.log("✅ 1:1 Chat selected:", chatWithUser.id);
+      hardScrollTop();
     } catch (error) {
-      console.error("❌ Failed to start 1:1 chat:", error);
+      console.error("❌ Failed to start chat:", error);
     }
   };
 
   const handleLogout = () => {
-    // WICKR-ME-STYLE: Never delete user data, preserve profile permanently
-    console.log(
-      "🚫 WICKR-ME-LOGOUT: Preserving user profile, only ending session"
-    );
+    // Session beenden (du willst wickr-style)
     setLocation("/");
   };
 
@@ -169,20 +162,28 @@ export default function Sidebar({
 
   return (
     <>
-      <div className="w-full md:w-80 bg-surface border-r md:border-r border-b md:border-b-0 border-border flex flex-col h-48 md:h-screen flex-shrink-0">
+      {/* ✅ dvh statt h-screen: iOS/Android Browser korrekt */}
+      <div
+        className="w-full md:w-80 bg-surface border-r md:border-r border-b md:border-b-0 border-border flex flex-col flex-shrink-0"
+        style={{
+          height: "100dvh",
+          overscrollBehavior: "contain",
+        }}
+      >
         {/* Header */}
-        <div className="p-4 border-b border-border">
+        <div className="p-4 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center overflow-hidden">
+            <div className="flex items-center space-x-3 min-w-0">
+              <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center overflow-hidden flex-shrink-0">
                 <img
                   src={logoPath}
                   alt="Whispergram Logo"
                   className="w-full h-full object-cover"
                 />
               </div>
-              <div>
-                <h2 className="font-semibold text-text-primary">
+
+              <div className="min-w-0">
+                <h2 className="font-semibold text-text-primary truncate">
                   {currentUser.username}
                 </h2>
                 <div className="flex items-center space-x-1">
@@ -197,7 +198,8 @@ export default function Sidebar({
                 </div>
               </div>
             </div>
-            <div className="flex space-x-2">
+
+            <div className="flex space-x-2 flex-shrink-0">
               <Button
                 variant="ghost"
                 size="sm"
@@ -206,6 +208,7 @@ export default function Sidebar({
               >
                 <Settings className="w-4 h-4" />
               </Button>
+
               <Button
                 variant="ghost"
                 size="sm"
@@ -214,6 +217,7 @@ export default function Sidebar({
               >
                 <Plus className="w-4 h-4" />
               </Button>
+
               <Button
                 variant="ghost"
                 size="sm"
@@ -228,15 +232,19 @@ export default function Sidebar({
         </div>
 
         {/* Search */}
-        <div className="p-4 border-b border-border">
+        <div className="p-4 border-b border-border flex-shrink-0">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-text-muted z-10 pointer-events-none" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted z-10 pointer-events-none" />
             <Input
               placeholder={t("searchUsers")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-12 pr-4 py-3 bg-gray-800 border-border text-white placeholder:text-gray-400 h-12 text-sm"
               style={{ textIndent: "8px" }}
+              onFocus={() => {
+                // iOS jump fix: bei focus manchmal scroll restore -> wir pushen hoch
+                setTimeout(() => hardScrollTop(), 0);
+              }}
             />
           </div>
         </div>
@@ -245,6 +253,10 @@ export default function Sidebar({
         <div
           ref={listRef}
           className="flex-1 overflow-y-auto custom-scrollbar"
+          style={{
+            overscrollBehavior: "contain",
+            WebkitOverflowScrolling: "touch",
+          }}
         >
           {isLoading ? (
             <div className="p-4 text-center">
@@ -254,9 +266,7 @@ export default function Sidebar({
           ) : !chats || chats.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-text-muted text-sm">No chats yet</p>
-              <p className="text-text-muted text-xs mt-1">
-                {t("startChat")}
-              </p>
+              <p className="text-text-muted text-xs mt-1">{t("startChat")}</p>
             </div>
           ) : (
             (chats || []).map((chat) => (
@@ -276,35 +286,32 @@ export default function Sidebar({
                       <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-accent rounded-full border-2 border-surface" />
                     )}
                   </div>
+
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <h3 className="font-medium text-text-primary truncate">
                         {chat.otherUser.username}
                       </h3>
-                      <div className="flex items-center space-x-2">
+
+                      <div className="flex items-center space-x-2 flex-shrink-0">
                         {chat.lastMessage && (
                           <span className="text-xs text-text-muted">
-                            {formatLastMessageTime(
-                              chat.lastMessage.createdAt
-                            )}
+                            {formatLastMessageTime(chat.lastMessage.createdAt)}
                           </span>
                         )}
+
                         <ChatContextMenu
                           currentUser={currentUser}
                           chat={chat}
                           onChatDeleted={() => {
-                            if (onRefreshChats) {
-                              onRefreshChats();
-                            }
+                            onRefreshChats?.();
                             if (selectedChat?.id === chat.id) {
                               const nullChat = null as any;
                               onSelectChat(nullChat);
                             }
                           }}
                           onUserBlocked={() => {
-                            if (onRefreshChats) {
-                              onRefreshChats();
-                            }
+                            onRefreshChats?.();
                             if (selectedChat?.id === chat.id) {
                               const nullChat = null as any;
                               onSelectChat(nullChat);
@@ -313,6 +320,7 @@ export default function Sidebar({
                         />
                       </div>
                     </div>
+
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-text-muted truncate">
                         {chat.lastMessage ? (
@@ -331,7 +339,8 @@ export default function Sidebar({
                           "Start a conversation..."
                         )}
                       </p>
-                      <div className="flex items-center space-x-2">
+
+                      <div className="flex items-center space-x-2 flex-shrink-0">
                         {unreadCounts.has(chat.id) &&
                           unreadCounts.get(chat.id)! > 0 && (
                             <Badge
@@ -354,15 +363,11 @@ export default function Sidebar({
         </div>
 
         {/* Connection Status */}
-        <div className="p-4 border-t border-border">
+        <div className="p-4 border-t border-border flex-shrink-0">
           <div className="flex items-center space-x-2 text-sm">
             <Shield className="w-4 h-4 text-accent" />
             <span className="text-text-muted">Encrypted • </span>
-            <span
-              className={
-                isConnected ? "text-accent" : "text-destructive"
-              }
-            >
+            <span className={isConnected ? "text-accent" : "text-destructive"}>
               {isConnected ? "Connected" : "Disconnected"}
             </span>
           </div>
@@ -370,23 +375,21 @@ export default function Sidebar({
       </div>
 
       {/* New Chat Dialog */}
-      <Dialog
-        open={showNewChatDialog}
-        onOpenChange={setShowNewChatDialog}
-      >
+      <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
         <DialogContent className="bg-surface border-border">
           <DialogHeader>
-            <DialogTitle className="text-foreground">
-              Start New Chat
-            </DialogTitle>
+            <DialogTitle className="text-foreground">Start New Chat</DialogTitle>
           </DialogHeader>
+
           <div className="space-y-4">
             <Input
               placeholder="Search users by username..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-gray-800 border-border text-white placeholder:text-gray-400"
+              onFocus={() => setTimeout(() => hardScrollTop(), 0)}
             />
+
             {searchResults && searchResults.length > 0 && (
               <div className="space-y-2 max-h-60 overflow-y-auto">
                 {searchResults.map((user: User) => (
@@ -400,15 +403,11 @@ export default function Sidebar({
                         <KeyRound className="w-4 h-4 text-muted-foreground" />
                       </div>
                       <div>
-                        <p className="font-medium text-white">
-                          {user.username}
-                        </p>
+                        <p className="font-medium text-white">{user.username}</p>
                         <div className="flex items-center space-x-1">
                           <div
                             className={`w-2 h-2 rounded-full ${
-                              user.isOnline
-                                ? "bg-accent"
-                                : "bg-muted-foreground"
+                              user.isOnline ? "bg-accent" : "bg-muted-foreground"
                             }`}
                           />
                           <span className="text-xs text-muted-foreground">
@@ -424,6 +423,7 @@ export default function Sidebar({
                 ))}
               </div>
             )}
+
             {searchQuery.length > 2 &&
               (!searchResults || searchResults.length === 0) && (
                 <p className="text-muted-foreground text-sm text-center py-4">
