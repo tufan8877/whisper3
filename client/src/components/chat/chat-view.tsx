@@ -1,42 +1,19 @@
-// client/src/components/chat/chat-view.tsx
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useLanguage } from "@/lib/i18n";
 import Message from "./message";
-import {
-  Paperclip,
-  Send,
-  Lock,
-  Clock,
-  MoreVertical,
-  Shield,
-  ArrowLeft,
-  Camera,
-} from "lucide-react";
+import { Paperclip, Send, Lock, Clock, MoreVertical, Shield, ArrowLeft, Camera } from "lucide-react";
 import type { User, Chat, Message as MessageType } from "@shared/schema";
 
 interface ChatViewProps {
   currentUser: User;
   selectedChat: (Chat & { otherUser: User }) | null;
   messages: MessageType[];
-  onSendMessage: (
-    content: string,
-    type: string,
-    destructTimer: number,
-    file?: File
-  ) => void;
+  onSendMessage: (content: string, type: string, destructTimer: number, file?: File) => void;
   isConnected: boolean;
   onBackToList: () => void;
-
-  // Tipp-Funktion
   onTyping?: (isTyping: boolean) => void;
   isPartnerTyping?: boolean;
 }
@@ -53,29 +30,28 @@ export default function ChatView({
 }: ChatViewProps) {
   const { t } = useLanguage();
   const [messageInput, setMessageInput] = useState("");
-  const [destructTimer, setDestructTimer] = useState("300"); // 5 min default
+  const [destructTimer, setDestructTimer] = useState("300");
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Für Tipp-Status
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
 
-  // Auto-scroll bei neuen Nachrichten
+  // Auto-scroll bei neuen Nachrichten ODER Tipp-Indikator
   useEffect(() => {
     if (!messagesEndRef.current) return;
     messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
+  }, [messages.length, isPartnerTyping]);
 
-  // Beim Chat-Wechsel Eingabe & Tipp-Status zurücksetzen
   useEffect(() => {
     setMessageInput("");
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
     }
-  }, [selectedChat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChat?.id]);
 
   if (!selectedChat) {
     return (
@@ -104,7 +80,6 @@ export default function ChatView({
     onSendMessage(text, "text", parseInt(destructTimer, 10));
     setMessageInput("");
 
-    // Tipp-Status beenden
     if (onTyping && isTypingRef.current) {
       onTyping(false);
       isTypingRef.current = false;
@@ -124,13 +99,11 @@ export default function ChatView({
 
     if (!onTyping) return;
 
-    // erstes Zeichen -> "tippt"
     if (!isTypingRef.current) {
       isTypingRef.current = true;
       onTyping(true);
     }
 
-    // wenn 1,5s keine Taste, dann "tippt nicht"
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       if (isTypingRef.current) {
@@ -148,7 +121,7 @@ export default function ChatView({
       return;
     }
 
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    const maxSize = 10 * 1024 * 1024;
     if (file.size > maxSize) {
       alert(t("fileTooLarge"));
       return;
@@ -177,12 +150,10 @@ export default function ChatView({
     const cameraInput = document.createElement("input");
     cameraInput.type = "file";
     cameraInput.accept = "image/*";
-    cameraInput.capture = "environment";
+    (cameraInput as any).capture = "environment";
     cameraInput.onchange = (ev) => {
       const file = (ev.target as HTMLInputElement).files?.[0];
-      if (file) {
-        handleFileUpload({ target: { files: [file] } } as any);
-      }
+      if (file) handleFileUpload({ target: { files: [file] } } as any);
     };
     cameraInput.click();
   };
@@ -200,31 +171,20 @@ export default function ChatView({
       <div className="bg-background border-b border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
-            {/* Zurück (mobil) */}
-            <button
-              onClick={onBackToList}
-              className="md:hidden text-muted-foreground hover:text-foreground"
-            >
+            <button onClick={onBackToList} className="md:hidden text-muted-foreground hover:text-foreground">
               <ArrowLeft className="w-5 h-5" />
             </button>
 
-            {/* Avatar + Name + Status */}
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-muted-foreground text-sm">👤</span>
               </div>
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold text-foreground truncate">
-                    {selectedChat.otherUser.username}
-                  </span>
+                  <span className="font-semibold text-foreground truncate">{selectedChat.otherUser.username}</span>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span
-                    className={
-                      isConnected ? "text-green-400 font-medium" : "text-red-400"
-                    }
-                  >
+                  <span className={isConnected ? "text-green-400 font-medium" : "text-red-400"}>
                     {isConnected ? t("connected") : t("disconnected")}
                   </span>
                   <span>•</span>
@@ -234,14 +194,10 @@ export default function ChatView({
             </div>
           </div>
 
-          {/* Timer + Menü rechts */}
           <div className="flex items-center gap-3 flex-shrink-0">
             <div className="flex items-center gap-1 bg-muted/30 rounded-lg px-2 py-1">
               <Clock className="w-3 h-3 text-muted-foreground" />
-              <Select
-                value={destructTimer}
-                onValueChange={(v) => setDestructTimer(v)}
-              >
+              <Select value={destructTimer} onValueChange={(v) => setDestructTimer(v)}>
                 <SelectTrigger className="border-0 bg-transparent text-foreground text-xs h-auto p-0 min-w-[55px]">
                   <SelectValue />
                 </SelectTrigger>
@@ -259,11 +215,7 @@ export default function ChatView({
               </Select>
             </div>
 
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground hover:text-foreground"
-            >
+            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground">
               <MoreVertical className="w-4 h-4" />
             </Button>
           </div>
@@ -276,46 +228,38 @@ export default function ChatView({
           <Shield className="w-4 h-4" />
           <span>{t("endToEndEncrypted")}</span>
         </div>
-        <div className="px-3 py-1 rounded bg-green-100 text-green-800 text-xs font-medium">
-          ✅ WebSocket Connected
-        </div>
+        <div className="px-3 py-1 rounded bg-green-100 text-green-800 text-xs font-medium">✅ WebSocket Connected</div>
       </div>
 
-      {/* MESSAGES (nur Nachrichten, KEIN Tipp-Indikator mehr hier) */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background">
+      {/* MESSAGES (extra bottom padding damit typing nie abgeschnitten wird) */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background pb-28">
         {messages.map((m) => (
-          <Message
-            key={m.id}
-            message={m}
-            isOwn={m.senderId === currentUser.id}
-            otherUser={selectedChat.otherUser}
-          />
+          <Message key={m.id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
         ))}
+
+        {isPartnerTyping && (
+          <div className="flex w-full justify-start">
+            <div className="flex items-end gap-2">
+              <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-muted-foreground text-xs">👤</span>
+              </div>
+              <div className="bg-surface rounded-2xl rounded-tl-md px-3 py-2">
+                <div className="flex gap-1 items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:-0.2s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:-0.1s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce" />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* NEU: Tipp-Indikator als eigene Leiste direkt über dem Eingabefeld */}
-      {isPartnerTyping && (
-        <div className="px-4 py-1 flex items-center gap-2 bg-background border-t border-border/60 flex-shrink-0">
-          <div className="w-6 h-6 bg-muted rounded-full flex items-center justify-center">
-            <span className="text-muted-foreground text-[11px]">👤</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:-0.2s]" />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:-0.1s]" />
-            <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/80 animate-bounce" />
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {t("typing") ?? "typing..."}
-          </span>
-        </div>
-      )}
-
-      {/* INPUT-BEREICH */}
+      {/* INPUT */}
       <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-end gap-2 w-full">
-          {/* Anhang */}
           <Button
             variant="ghost"
             size="icon"
@@ -325,7 +269,6 @@ export default function ChatView({
             <Paperclip className="w-5 h-5" />
           </Button>
 
-          {/* Kamera */}
           <Button
             variant="ghost"
             size="icon"
@@ -335,7 +278,6 @@ export default function ChatView({
             <Camera className="w-5 h-5" />
           </Button>
 
-          {/* Textarea nimmt ALLE Breite zwischen Icons & Button */}
           <div className="flex-1 min-w-0">
             <Textarea
               placeholder={isConnected ? t("typeMessage") : t("connecting")}
@@ -347,7 +289,6 @@ export default function ChatView({
             />
           </div>
 
-          {/* Senden-Button */}
           <Button
             onClick={handleSendMessage}
             disabled={!messageInput.trim() || !isConnected}
@@ -357,7 +298,6 @@ export default function ChatView({
           </Button>
         </div>
 
-        {/* Status-Zeile unten */}
         <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
           <div className="flex items-center gap-1">
             <Lock className="w-3 h-3 text-green-500" />
@@ -365,13 +305,10 @@ export default function ChatView({
           </div>
           <div className="flex items-center gap-1">
             <span>{t("autoDestruct")}:</span>
-            <span className="text-destructive font-medium">
-              {formatDestructTimer(parseInt(destructTimer, 10))}
-            </span>
+            <span className="text-destructive font-medium">{formatDestructTimer(parseInt(destructTimer, 10))}</span>
           </div>
         </div>
 
-        {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
