@@ -1,3 +1,4 @@
+// client/src/components/chat/chat-view.tsx
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,11 +39,23 @@ export default function ChatView({
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
 
-  // Auto-scroll bei neuen Nachrichten ODER Tipp-Indikator
-  useEffect(() => {
+  const scrollToBottom = (smooth = true) => {
     if (!messagesEndRef.current) return;
-    messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, isPartnerTyping]);
+    messagesEndRef.current.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+  };
+
+  useEffect(() => {
+    scrollToBottom(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
+
+  // ✅ wenn Partner tippt -> automatisch sichtbar (kein runterscrollen nötig)
+  useEffect(() => {
+    if (isPartnerTyping) {
+      scrollToBottom(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPartnerTyping]);
 
   useEffect(() => {
     setMessageInput("");
@@ -50,8 +63,7 @@ export default function ChatView({
       onTyping(false);
       isTypingRef.current = false;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedChat?.id]);
+  }, [selectedChat?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!selectedChat) {
     return (
@@ -129,10 +141,7 @@ export default function ChatView({
 
     if (file.type.startsWith("image/")) {
       const reader = new FileReader();
-      reader.onload = () => {
-        const base64String = reader.result as string;
-        onSendMessage(base64String, "image", parseInt(destructTimer, 10));
-      };
+      reader.onload = () => onSendMessage(reader.result as string, "image", parseInt(destructTimer, 10));
       reader.readAsDataURL(file);
     } else {
       onSendMessage(`📎 ${file.name}`, "file", parseInt(destructTimer, 10), file);
@@ -166,7 +175,7 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background min-h-0">
       {/* HEADER */}
       <div className="bg-background border-b border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
@@ -231,10 +240,16 @@ export default function ChatView({
         <div className="px-3 py-1 rounded bg-green-100 text-green-800 text-xs font-medium">✅ WebSocket Connected</div>
       </div>
 
-      {/* MESSAGES (extra bottom padding damit typing nie abgeschnitten wird) */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background pb-28">
+      {/* MESSAGES */}
+      <div
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3 bg-background"
+        style={{
+          // ✅ Platz für Input + iPhone safe area (damit typing nicht “halb” ist)
+          paddingBottom: "calc(110px + env(safe-area-inset-bottom))",
+        }}
+      >
         {messages.map((m) => (
-          <Message key={m.id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
+          <Message key={(m as any).id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
         ))}
 
         {isPartnerTyping && (
@@ -258,23 +273,13 @@ export default function ChatView({
       </div>
 
       {/* INPUT */}
-      <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0">
+      <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div className="flex items-end gap-2 w-full">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-foreground flex-shrink-0"
-            onClick={() => fileInputRef.current?.click()}
-          >
+          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground flex-shrink-0" onClick={() => fileInputRef.current?.click()}>
             <Paperclip className="w-5 h-5" />
           </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-foreground flex-shrink-0"
-            onClick={handleCameraCapture}
-          >
+          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground flex-shrink-0" onClick={handleCameraCapture}>
             <Camera className="w-5 h-5" />
           </Button>
 
@@ -305,7 +310,9 @@ export default function ChatView({
           </div>
           <div className="flex items-center gap-1">
             <span>{t("autoDestruct")}:</span>
-            <span className="text-destructive font-medium">{formatDestructTimer(parseInt(destructTimer, 10))}</span>
+            <span className="text-destructive font-medium">
+              {formatDestructTimer(parseInt(destructTimer, 10))}
+            </span>
           </div>
         </div>
 
