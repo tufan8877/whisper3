@@ -1,36 +1,19 @@
+// client/src/hooks/useWebSocket.ts
 import { useEffect, useRef, useState } from "react";
 
 type Handler = (data?: any) => void;
 
-export function useWebSocket(userId?: number) {
+export function useWebSocket(userId?: number, token?: string) {
   const [isConnected, setIsConnected] = useState(false);
-
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventHandlersRef = useRef<Map<string, Handler[]>>(new Map());
-  const manualCloseRef = useRef(false);
-
-  const getToken = () => {
-    try {
-      const raw = localStorage.getItem("user");
-      if (!raw) return null;
-      const u = JSON.parse(raw);
-      return u?.token || u?.accessToken || localStorage.getItem("token") || null;
-    } catch {
-      return localStorage.getItem("token");
-    }
-  };
+  const joinedRef = useRef(false);
+  const reconnectingRef = useRef(false);
 
   const emit = (event: string, data?: any) => {
     const handlers = eventHandlersRef.current.get(event);
-    if (!handlers) return;
-    handlers.forEach((fn) => {
-      try {
-        fn(data);
-      } catch (e) {
-        console.error("WS handler error:", e);
-      }
-    });
+    if (handlers) handlers.forEach((h) => h(data));
   };
 
   useEffect(() => {
@@ -39,63 +22,80 @@ export function useWebSocket(userId?: number) {
       return;
     }
 
-    manualCloseRef.current = false;
+    // Token ist für JOIN nötig (dein Server verlangt token!)
+    if (!token) {
+      console.log("🚫 useWebSocket: No token provided (join requires token)");
+      return;
+    }
 
     const connect = () => {
-      if (manualCloseRef.current) return;
+      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
 
-      // ws/wss automatisch passend zum Browser-Protokoll
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const wsUrl = `${proto}://${window.location.host}/ws`;
+      // ✅ Render/Prod: wss://host/ws
+      // ✅ Dev: ws://localhost:5173 -> ws://localhost:5173/ws (läuft über Vite Proxy oder same origin)
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = `${protocol}://${window.location.host}/ws`;
 
-      console.log("🔌 Connecting to WebSocket:", wsUrl);
+      console.log("🔌 Connecting WebSocket:", wsUrl);
 
       try {
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
+        joinedRef.current = false;
+        wsRef.current = new WebSocket(wsUrl);
 
-        ws.onopen = () => {
+        wsRef.current.onopen = () => {
           console.log("✅ WebSocket connected");
           setIsConnected(true);
-          emit("connected");
+          reconnectingRef.current = false;
 
-          // JOIN mit TOKEN (Server verlangt token!)
-          const token = getToken();
+          // ✅ JOIN mit token (Server verlangt token)
           const joinMessage = { type: "join", token };
-          ws.send(JSON.stringify(joinMessage));
+          wsRef.current?.send(JSON.stringify(joinMessage));
         };
 
-        ws.onmessage = (event) => {
+        wsRef.current.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            // 1) spezifisches Event (new_message, user_status, typing, ...)
+
+            // join_confirmed nur einmal akzeptieren
+            if (data?.type === "join_confirmed") {
+              if (joinedRef.current) return;
+              joinedRef.current = true;
+              emit("connected", data);
+              emit("join_confirmed", data);
+              return;
+            }
+
             if (data?.type) emit(data.type, data);
-            // 2) allgemeines Event
             emit("message", data);
-          } catch (error) {
-            console.error("❌ Failed to parse WS message:", error);
+          } catch (err) {
+            console.error("❌ Failed to parse WS message:", err);
           }
         };
 
-        ws.onclose = () => {
+        wsRef.current.onclose = () => {
           console.log("❌ WebSocket disconnected");
           setIsConnected(false);
+          joinedRef.current = false;
           emit("disconnected");
 
-          if (manualCloseRef.current) return;
-
-          // Reconnect nach 2s
           if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("🔄 Reconnecting...");
-            connect();
-          }, 2000);
+
+          // ✅ Reconnect – aber nur einmal geplant
+          if (!reconnectingRef.current) {
+            reconnectingRef.current = true;
+            reconnectTimeoutRef.current = setTimeout(() => {
+              reconnectingRef.current = false;
+              connect();
+            }, 1500);
+          }
         };
 
-        ws.onerror = (err) => {
-          console.error("❌ WebSocket error:", err);
+        wsRef.current.onerror = (error) => {
+          console.error("❌ WebSocket error:", error);
           setIsConnected(false);
-          emit("error", err);
+          emit("error", error);
         };
       } catch (error) {
         console.error("❌ Failed to create WebSocket:", error);
@@ -107,30 +107,28 @@ export function useWebSocket(userId?: number) {
 
     return () => {
       console.log("🧹 Cleaning up WebSocket");
-      manualCloseRef.current = true;
-
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      reconnectingRef.current = false;
+      joinedRef.current = false;
 
       if (wsRef.current) {
         try {
+          wsRef.current.onopen = null;
+          wsRef.current.onmessage = null;
+          wsRef.current.onclose = null;
+          wsRef.current.onerror = null;
           wsRef.current.close();
         } catch {}
-        wsRef.current = null;
       }
 
+      wsRef.current = null;
       eventHandlersRef.current.clear();
-      setIsConnected(false);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId, token]);
 
   const send = (message: any) => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
       return true;
     }
     return false;
@@ -152,12 +150,5 @@ export function useWebSocket(userId?: number) {
     if (idx >= 0) handlers.splice(idx, 1);
   };
 
-  const socket = {
-    send,
-    on,
-    off,
-    isConnected: () => wsRef.current?.readyState === WebSocket.OPEN,
-  };
-
-  return { socket, isConnected };
+  return { socket: { send, on, off }, isConnected };
 }
