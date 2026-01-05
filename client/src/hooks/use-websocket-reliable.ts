@@ -1,143 +1,153 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+// client/src/hooks/use-websocket-reliable.ts
+import { useEffect, useMemo, useRef, useState } from "react";
 
-function getAuthToken(): string | null {
-  try {
-    const raw = localStorage.getItem("user");
-    if (!raw) return null;
-    const u = JSON.parse(raw);
-    return u?.token || u?.accessToken || null;
-  } catch {
-    return null;
-  }
-}
+type Handler = (data?: any) => void;
 
-export function useWebSocketReliable(userId?: number) {
+export function useWebSocketReliable(userId?: number, token?: string) {
   const [isConnected, setIsConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const eventHandlersRef = useRef<Map<string, Function[]>>(new Map());
-  const reconnectTimeoutRef = useRef<any>(null);
-  const messageQueueRef = useRef<any[]>([]);
 
-  const emit = useCallback((event: string, data?: any) => {
-    const handlers = eventHandlersRef.current.get(event) || [];
-    handlers.forEach((h) => {
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const handlersRef = useRef<Map<string, Set<Handler>>>(new Map());
+  const joinedRef = useRef(false);
+
+  const wsUrl = useMemo(() => {
+    // ✅ Render/HTTPS => wss, local => ws
+    const isHttps = window.location.protocol === "https:";
+    const proto = isHttps ? "wss" : "ws";
+
+    // ✅ KEIN :5000 (Render routed den Websocket über die gleiche Domain)
+    return `${proto}://${window.location.host}/ws`;
+  }, []);
+
+  const emit = (event: string, data?: any) => {
+    const set = handlersRef.current.get(event);
+    if (!set) return;
+    set.forEach((fn) => {
       try {
-        h(data);
+        fn(data);
       } catch (e) {
         console.error("WS handler error:", e);
       }
     });
-  }, []);
+  };
 
-  const connect = useCallback(() => {
-    if (!userId) return;
+  const connect = () => {
+    if (!userId || !token) return;
 
-    const token = getAuthToken();
-    if (!token) {
-      console.error("❌ Missing JWT token in localStorage -> cannot connect websocket.");
-      setIsConnected(false);
-      return;
-    }
+    // schon offen?
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
-    try {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-      console.log("🔌 Connecting WebSocket:", wsUrl);
-
-      wsRef.current = new WebSocket(wsUrl);
-
-      wsRef.current.onopen = () => {
-        console.log("✅ WebSocket connected");
-        setIsConnected(true);
-
-        // ✅ IMPORTANT: server expects JOIN with token
-        const joinMessage = { type: "join", token };
-        wsRef.current?.send(JSON.stringify(joinMessage));
-        console.log("📤 WS join sent (token)");
-
-        // send queued messages
-        while (messageQueueRef.current.length > 0) {
-          const queued = messageQueueRef.current.shift();
-          wsRef.current?.send(JSON.stringify(queued));
-        }
-
-        emit("connected");
-      };
-
-      wsRef.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          // emit specific event
-          if (data?.type) emit(data.type, data);
-          // emit general
-          emit("message", data);
-        } catch (e) {
-          console.error("❌ WS parse error:", e);
-        }
-      };
-
-      wsRef.current.onclose = (evt) => {
-        console.log("🔌 WebSocket closed:", evt.code, evt.reason);
-        setIsConnected(false);
-        emit("disconnected");
-
-        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(() => {
-          console.log("🔄 WS reconnecting...");
-          connect();
-        }, 2500);
-      };
-
-      wsRef.current.onerror = (err) => {
-        console.error("❌ WebSocket error:", err);
-        setIsConnected(false);
-        emit("error", err);
-      };
-    } catch (e) {
-      console.error("❌ Failed to create WebSocket:", e);
-      setIsConnected(false);
-    }
-  }, [userId, emit]);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+    // cleanup old
+    if (wsRef.current) {
       try {
-        wsRef.current?.close();
+        wsRef.current.close();
       } catch {}
       wsRef.current = null;
-      eventHandlersRef.current.clear();
+    }
+
+    joinedRef.current = false;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setIsConnected(true);
+      emit("connected");
+
+      // ✅ Join mit token (Server verlangt token)
+      try {
+        ws.send(JSON.stringify({ type: "join", token }));
+      } catch (e) {
+        console.error("Failed to send join:", e);
+      }
     };
-  }, [connect]);
 
-  const send = useCallback((message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+    ws.onmessage = (event) => {
+      let data: any;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (data?.type === "join_confirmed") {
+        joinedRef.current = true;
+      }
+
+      // ✅ nur 1x dispatch – NICHT doppelt "message" UND "data.type"
+      if (data?.type) emit(data.type, data);
+    };
+
+    ws.onerror = (err) => {
+      emit("error", err);
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+      emit("disconnected");
+
+      // auto reconnect
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connect();
+      }, 1500);
+    };
+  };
+
+  useEffect(() => {
+    if (!userId || !token) return;
+
+    connect();
+
+    return () => {
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+      }
+      wsRef.current = null;
+      handlersRef.current.clear();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, token, wsUrl]);
+
+  const send = (payload: any) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (!joinedRef.current) return false;
+
+    try {
+      ws.send(JSON.stringify(payload));
       return true;
+    } catch (e) {
+      console.error("WS send failed:", e);
+      return false;
     }
-    // queue if not open
-    messageQueueRef.current.push(message);
-    return false;
-  }, []);
+  };
 
-  const on = useCallback((event: string, handler: Function) => {
-    const handlers = eventHandlersRef.current.get(event) || [];
-    handlers.push(handler);
-    eventHandlersRef.current.set(event, handlers);
-  }, []);
+  const on = (event: string, handler: Handler) => {
+    if (!handlersRef.current.has(event)) handlersRef.current.set(event, new Set());
+    handlersRef.current.get(event)!.add(handler);
+    return () => off(event, handler);
+  };
 
-  const off = useCallback((event: string, handler?: Function) => {
-    if (!handler) {
-      eventHandlersRef.current.delete(event);
-      return;
-    }
-    const handlers = eventHandlersRef.current.get(event) || [];
-    const idx = handlers.indexOf(handler);
-    if (idx >= 0) handlers.splice(idx, 1);
-    eventHandlersRef.current.set(event, handlers);
-  }, []);
+  const off = (event: string, handler: Handler) => {
+    const set = handlersRef.current.get(event);
+    if (!set) return;
+    set.delete(handler);
+    if (set.size === 0) handlersRef.current.delete(event);
+  };
 
-  return { isConnected, send, on, off };
+  return {
+    isConnected,
+    send,
+    on,
+    off,
+  };
 }
+
+export default useWebSocketReliable;
