@@ -2,10 +2,25 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useLanguage } from "@/lib/i18n";
 import Message from "./message";
-import { Paperclip, Send, Lock, Clock, MoreVertical, Shield, ArrowLeft, Camera } from "lucide-react";
+import {
+  Paperclip,
+  Send,
+  Lock,
+  Clock,
+  MoreVertical,
+  Shield,
+  ArrowLeft,
+  Camera,
+} from "lucide-react";
 import type { User, Chat, Message as MessageType } from "@shared/schema";
 
 interface ChatViewProps {
@@ -39,22 +54,17 @@ export default function ChatView({
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
 
-  const scrollToBottom = (smooth = true) => {
-    if (!messagesEndRef.current) return;
-    messagesEndRef.current.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
-  };
-
+  // Auto-scroll when messages change
   useEffect(() => {
-    scrollToBottom(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length]);
 
-  // ✅ wenn Partner tippt -> automatisch sichtbar (kein runterscrollen nötig)
+  // ✅ Auto-scroll when partner starts typing
   useEffect(() => {
-    if (isPartnerTyping) {
-      scrollToBottom(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!isPartnerTyping) return;
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [isPartnerTyping]);
 
   useEffect(() => {
@@ -141,7 +151,10 @@ export default function ChatView({
 
     if (file.type.startsWith("image/")) {
       const reader = new FileReader();
-      reader.onload = () => onSendMessage(reader.result as string, "image", parseInt(destructTimer, 10));
+      reader.onload = () => {
+        const base64String = reader.result as string;
+        onSendMessage(base64String, "image", parseInt(destructTimer, 10));
+      };
       reader.readAsDataURL(file);
     } else {
       onSendMessage(`📎 ${file.name}`, "file", parseInt(destructTimer, 10), file);
@@ -175,12 +188,15 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background min-h-0">
+    <div className="flex flex-col h-full bg-background">
       {/* HEADER */}
       <div className="bg-background border-b border-border px-3 py-2 flex-shrink-0">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={onBackToList} className="md:hidden text-muted-foreground hover:text-foreground">
+            <button
+              onClick={onBackToList}
+              className="md:hidden text-muted-foreground hover:text-foreground"
+            >
               <ArrowLeft className="w-5 h-5" />
             </button>
 
@@ -190,7 +206,9 @@ export default function ChatView({
               </div>
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold text-foreground truncate">{selectedChat.otherUser.username}</span>
+                  <span className="font-semibold text-foreground truncate">
+                    {selectedChat.otherUser.username}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className={isConnected ? "text-green-400 font-medium" : "text-red-400"}>
@@ -237,19 +255,20 @@ export default function ChatView({
           <Shield className="w-4 h-4" />
           <span>{t("endToEndEncrypted")}</span>
         </div>
-        <div className="px-3 py-1 rounded bg-green-100 text-green-800 text-xs font-medium">✅ WebSocket Connected</div>
+        <div className="px-3 py-1 rounded bg-green-100 text-green-800 text-xs font-medium">
+          ✅ WebSocket Connected
+        </div>
       </div>
 
-      {/* MESSAGES */}
-      <div
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3 bg-background"
-        style={{
-          // ✅ Platz für Input + iPhone safe area (damit typing nicht “halb” ist)
-          paddingBottom: "calc(110px + env(safe-area-inset-bottom))",
-        }}
-      >
+      {/* MESSAGES (✅ extra bottom padding + safe-area) */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-background pb-28">
         {messages.map((m) => (
-          <Message key={(m as any).id} message={m} isOwn={m.senderId === currentUser.id} otherUser={selectedChat.otherUser} />
+          <Message
+            key={m.id}
+            message={m}
+            isOwn={m.senderId === currentUser.id}
+            otherUser={selectedChat.otherUser}
+          />
         ))}
 
         {isPartnerTyping && (
@@ -272,14 +291,27 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* INPUT */}
-      <div className="bg-background border-t border-border px-3 py-2 flex-shrink-0" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+      {/* INPUT (✅ safe-area padding for iOS) */}
+      <div
+        className="bg-background border-t border-border px-3 py-2 flex-shrink-0"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)" }}
+      >
         <div className="flex items-end gap-2 w-full">
-          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground flex-shrink-0" onClick={() => fileInputRef.current?.click()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-foreground flex-shrink-0"
+            onClick={() => fileInputRef.current?.click()}
+          >
             <Paperclip className="w-5 h-5" />
           </Button>
 
-          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground flex-shrink-0" onClick={handleCameraCapture}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-foreground flex-shrink-0"
+            onClick={handleCameraCapture}
+          >
             <Camera className="w-5 h-5" />
           </Button>
 
