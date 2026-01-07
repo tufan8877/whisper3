@@ -181,7 +181,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ✅ NEU: Eigenes Profil hart löschen (inkl. Chats & Messages)
+  // ✅ Eigenes Profil hart löschen (inkl. Chats & Messages)
   app.delete("/api/me", requireAuth, async (req: any, res) => {
     try {
       const userId = req.auth.userId;
@@ -357,7 +357,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   setInterval(() => {
     wss.clients.forEach((client: any) => {
       if (client.isAlive === false) return client.terminate();
-      client.isAlive = false;
+      client.isAlive = true;
       client.ping();
     });
   }, 30000);
@@ -372,7 +372,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   }, 300000);
 
-  // ✅ NEU: Inaktive Profile nach 20 Tagen löschen
+  // ✅ Inaktive Profile nach 20 Tagen löschen
   setInterval(async () => {
     try {
       const deletedUsers = await storage.deleteInactiveUsers(20);
@@ -507,6 +507,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const senderId = toInt((validatedMessage as any).senderId, 0);
             const receiverId = toInt((validatedMessage as any).receiverId, 0);
 
+            // ✅ NEW: clientMessageId für Dedupe
+            const clientMessageId = String(
+              (validatedMessage as any).clientMessageId ||
+                (parsed?.clientMessageId ?? parsed?.message?.clientMessageId ?? "")
+            );
+
             if (!senderId || senderId !== joinedUserId) {
               ws.send(JSON.stringify({ type: "error", message: "Sender mismatch" }));
               return;
@@ -525,7 +531,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const wasDeletedSender = await storage.isChatDeletedForUser(senderId, chat.id);
             if (wasDeletedSender) await storage.reactivateChatForUser(senderId, chat.id);
 
-            const destructTimerSec = normalizeDestructTimerSeconds((validatedMessage as any).destructTimer);
+            const destructTimerSec = normalizeDestructTimerSeconds(
+              (validatedMessage as any).destructTimer
+            );
             const expiresAt = new Date(Date.now() + destructTimerSec * 1000);
 
             const newMessage = await storage.createMessage({
@@ -543,22 +551,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             await storage.updateChatLastMessage(chat.id, (newMessage as any).id);
 
+            // ✅ include clientMessageId in acknowledgement
             ws.send(
               JSON.stringify({
                 type: "message_sent",
                 ok: true,
                 messageId: (newMessage as any).id,
                 chatId: chat.id,
+                clientMessageId,
               })
             );
 
-            const payload = { type: "new_message", message: newMessage };
+            const payload = {
+              type: "new_message",
+              message: newMessage,
+              clientMessageId, // echo back for dedupe
+            };
 
             const senderClient = connectedClients.get(senderId);
-            if (senderClient?.ws?.readyState === WebSocket.OPEN) senderClient.ws.send(JSON.stringify(payload));
+            if (senderClient?.ws?.readyState === WebSocket.OPEN) {
+              senderClient.ws.send(JSON.stringify(payload));
+            }
 
             const receiverClient = connectedClients.get(receiverId);
-            if (receiverClient?.ws?.readyState === WebSocket.OPEN) receiverClient.ws.send(JSON.stringify(payload));
+            if (receiverClient?.ws?.readyState === WebSocket.OPEN) {
+              receiverClient.ws.send(JSON.stringify(payload));
+            }
 
             break;
           }
