@@ -1,11 +1,12 @@
+// client/src/lib/queryClient.ts
 import { QueryClient } from "@tanstack/react-query";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
+      staleTime: 30_000,
       refetchOnWindowFocus: false,
       retry: 1,
-      staleTime: 1000 * 10, // 10 Sekunden
     },
     mutations: {
       retry: 0,
@@ -13,31 +14,29 @@ export const queryClient = new QueryClient({
   },
 });
 
-export async function apiRequest(
-  method: string,
-  url: string,
-  body?: any,
-  extraHeaders?: Record<string, string>
-) {
-  const token = localStorage.getItem("token");
+export async function apiRequest(method: string, url: string, body?: any) {
+  const token = (() => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (!raw) return null;
+      const u = JSON.parse(raw);
+      return u?.token || null;
+    } catch {
+      return null;
+    }
+  })();
 
   const headers: Record<string, string> = {
-    ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(extraHeaders || {}),
+    "Content-Type": "application/json",
   };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(url, {
     method,
     headers,
-    body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
-
-  if (!res.ok) {
-    const msg = await res.text();
-    throw new Error(`API ${method} ${url} failed: ${msg}`);
-  }
 
   return res;
 }
